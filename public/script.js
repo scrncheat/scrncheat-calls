@@ -1,181 +1,300 @@
-const callRecipientInput = document.getElementById('callRecipient');
-const callButton = document.getElementById('callButton');
-const hangupButton = document.getElementById('hangupButton');
-const callStatusDisplay = document.getElementById('callStatus');
-const remoteAudio = document.getElementById('remoteAudio');
+// Pierre Fouquet Calls — SPA: passwordless login + in-app WebRTC calling.
 
-let localStream;
-let peerConnection;
-let ws;
-const userId = Math.random().toString(36).substring(2, 15); // Simple unique ID
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
 
-callButton.addEventListener('click', initiateCall);
-hangupButton.addEventListener('click', hangUpCall);
+const $ = (id) => document.getElementById(id);
 
-function connectWebSocket() {
-    ws = new WebSocket(`wss://${window.location.host}/ws`); // Connect to the Worker on the same domain
+function show(el) { el.classList.remove("hidden"); }
+function hide(el) { el.classList.add("hidden"); }
 
-    ws.onopen = () => {
-        console.log('WebSocket connected.');
-        sendMessage({ type: 'register', userId });
-        callStatusDisplay.textContent = 'Ready to call.';
-        callButton.disabled = false;
-    };
-
-    ws.onmessage = async (event) => {
-        try {
-            const message = JSON.parse(event.data);
-            console.log('Received message:', message);
-
-            switch (message.type) {
-                case 'incomingCall':
-                    if (confirm(`Incoming call from ${message.callerId}. Accept?`)) {
-                        callStatusDisplay.textContent = 'Answering call...';
-                        await startWebRTC();
-                        const offer = await peerConnection.createOffer();
-                        await peerConnection.setLocalDescription(offer);
-                        sendMessage({ type: 'offer', recipientId: message.callerId, sdp: offer });
-                    } else {
-                        sendMessage({ type: 'rejectCall', recipientId: message.callerId });
-                    }
-                    break;
-                case 'offer':
-                    callStatusDisplay.textContent = 'Receiving offer...';
-                    await startWebRTC();
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    sendMessage({ type: 'answer', recipientId: message.senderId, sdp: answer });
-                    break;
-                case 'answer':
-                    callStatusDisplay.textContent = 'Receiving answer...';
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.sdp));
-                    hangupButton.disabled = false;
-                    callStatusDisplay.textContent = 'Call established.';
-                    break;
-                case 'iceCandidate':
-                    if (peerConnection) {
-                        try {
-                            await peerConnection.addIceCandidate(message.candidate);
-                        } catch (e) {
-                            console.error('Error adding ICE candidate:', e);
-                        }
-                    }
-                    break;
-                case 'callRejected':
-                    callStatusDisplay.textContent = `Call to ${message.recipientId} was rejected.`;
-                    resetCallUI();
-                    break;
-                case 'callEnded':
-                    callStatusDisplay.textContent = 'Call ended by the other party.';
-                    hangUpCall();
-                    break;
-            }
-        } catch (error) {
-            console.error('Error processing WebSocket message:', error);
-        }
-    };
-
-    ws.onclose = () => {
-        console.log('WebSocket closed.');
-        callStatusDisplay.textContent = 'WebSocket disconnected.';
-        resetCallUI();
-        setTimeout(connectWebSocket, 3000); // Attempt to reconnect
-    };
-
-    ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        callStatusDisplay.textContent = 'WebSocket error.';
-        resetCallUI();
-    };
+function getCookie(name) {
+  for (const part of document.cookie.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === name) return decodeURIComponent(v.join("="));
+  }
+  return "";
 }
 
-function sendMessage(message) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message));
-    }
+async function api(path, { method = "GET", body } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (method !== "GET" && method !== "HEAD") {
+    const csrf = getCookie("pfc_csrf");
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+  }
+  const res = await fetch(path, {
+    method,
+    headers,
+    credentials: "same-origin",
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* non-JSON */ }
+  return { status: res.status, ok: res.ok, data };
 }
 
-async function initiateCall() {
-    const recipientId = callRecipientInput.value.trim();
-    if (!recipientId || recipientId === userId) {
-        alert('Please enter a valid recipient ID.');
-        return;
-    }
-    callButton.disabled = true;
-    callStatusDisplay.textContent = `Calling ${recipientId}...`;
-    await startWebRTC();
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    sendMessage({ type: 'offer', recipientId, sdp: offer });
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
+let myEmail = null;
+
+async function bootstrap() {
+  const me = await api("/api/auth/me");
+  if (me.ok && me.data.user) {
+    myEmail = me.data.user.email;
+    enterApp();
+  } else {
+    showLogin();
+  }
 }
 
-async function startWebRTC() {
-    if (peerConnection) return;
-
-    peerConnection = new RTCPeerConnection({
-        "iceServers":
-        [{
-            "urls":[
-                "stun:stun.cloudflare.com:3478",
-                "stun:stun.cloudflare.com:53"
-            ]},
-            {
-                "urls":
-                [
-                    "turn:turn.cloudflare.com:3478?transport=udp",
-                    "turn:turn.cloudflare.com:53?transport=udp",
-                    "turn:turn.cloudflare.com:3478?transport=tcp",
-                    "turn:turn.cloudflare.com:80?transport=tcp",
-                    "turns:turn.cloudflare.com:5349?transport=tcp",
-                    "turns:turn.cloudflare.com:443?transport=tcp"
-                ],
-                    "username":"${{secrets.TURN_USER}}",
-                    "credential":"${{secrets.TURN_CRED}}"
-                }
-            ]
-        }
-    )};
-
-    peerConnection.ontrack = (event) => {
-        if (event.streams && event.streams[0]) {
-            remoteAudio.srcObject = event.streams[0];
-        }
-    };
-
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            sendMessage({ type: 'iceCandidate', recipientId: (isCaller ? callRecipientInput.value : null), candidate: event.candidate });
-        }
-    };
-
-    try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-    } catch (error) {
-        console.error('Error accessing media:', error);
-        resetCallUI();
-    }
-
-function hangUpCall() {
-    if (peerConnection) {
-        sendMessage({ type: 'hangup', recipientId: (isCaller ? callRecipientInput.value : null) });
-        peerConnection.close();
-        peerConnection = null;
-    }
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-    }
-    resetCallUI();
-    callStatusDisplay.textContent = 'Call ended.';
+function showLogin() {
+  hide($("appView"));
+  hide($("account"));
+  show($("loginView"));
+  show($("emailStep"));
+  hide($("codeStep"));
+  $("loginStatus").textContent = "";
 }
 
-function resetCallUI() {
-    callButton.disabled = false;
-    hangupButton.disabled = true;
-    remoteAudio.srcObject = null;
-    isCaller = false;
+$("sendCodeButton").addEventListener("click", async () => {
+  const email = $("email").value.trim();
+  if (!email) { $("loginStatus").textContent = "Enter your email."; return; }
+  $("sendCodeButton").disabled = true;
+  const res = await api("/api/auth/request-code", { method: "POST", body: { email } });
+  $("sendCodeButton").disabled = false;
+  if (res.status === 429) {
+    $("loginStatus").textContent = "Too many requests — please wait a bit and try again.";
+    return;
+  }
+  $("codeEmailLabel").textContent = email;
+  hide($("emailStep"));
+  show($("codeStep"));
+  $("loginStatus").textContent = "Check your email for the code.";
+  $("code").focus();
+});
+
+$("backButton").addEventListener("click", () => {
+  show($("emailStep"));
+  hide($("codeStep"));
+  $("loginStatus").textContent = "";
+});
+
+$("verifyButton").addEventListener("click", async () => {
+  const email = $("codeEmailLabel").textContent;
+  const code = $("code").value.trim();
+  if (!/^\d{6}$/.test(code)) { $("loginStatus").textContent = "Enter the 6-digit code."; return; }
+  $("verifyButton").disabled = true;
+  const res = await api("/api/auth/verify-code", { method: "POST", body: { email, code } });
+  $("verifyButton").disabled = false;
+  if (!res.ok) {
+    $("loginStatus").textContent =
+      res.status === 429 ? "Too many attempts — wait and retry." : "Invalid or expired code.";
+    return;
+  }
+  myEmail = res.data.user.email;
+  enterApp();
+});
+
+$("logoutButton").addEventListener("click", async () => {
+  await api("/api/auth/logout", { method: "POST" });
+  teardownCall();
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  myEmail = null;
+  showLogin();
+});
+
+function enterApp() {
+  hide($("loginView"));
+  show($("appView"));
+  show($("account"));
+  $("accountEmail").textContent = myEmail;
+  connectSignaling();
 }
 
-connectWebSocket(); // Initiate WebSocket connection on page load
+// ---------------------------------------------------------------------------
+// Signaling + WebRTC
+// ---------------------------------------------------------------------------
+
+let ws = null;
+let pc = null;
+let localStream = null;
+let currentPeer = null;
+let role = null; // "caller" | "callee"
+let pendingCandidates = [];
+let iceServers = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
+
+function send(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function setConn(text) { $("connStatus").textContent = text; }
+function setCall(text) { $("callStatus").textContent = text; }
+
+async function connectSignaling() {
+  // Refresh ICE servers (short-lived TURN creds minted server-side).
+  try {
+    const t = await api("/api/turn");
+    if (t.ok && Array.isArray(t.data.iceServers)) iceServers = t.data.iceServers;
+  } catch { /* keep STUN default */ }
+
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    setConn("online");
+    $("callButton").disabled = false;
+  };
+  ws.onclose = () => {
+    setConn("disconnected");
+    $("callButton").disabled = true;
+    // Reconnect only while still signed in.
+    if (myEmail) setTimeout(connectSignaling, 3000);
+  };
+  ws.onerror = () => setConn("error");
+  ws.onmessage = (event) => handleSignal(JSON.parse(event.data));
+}
+
+async function handleSignal(msg) {
+  switch (msg.type) {
+    case "registered":
+      setConn("online");
+      break;
+
+    case "incoming-call":
+      // Server-derived caller id; show accept/reject.
+      $("incomingFrom").textContent = msg.senderId;
+      currentPeer = msg.senderId;
+      role = "callee";
+      show($("incomingCall"));
+      break;
+
+    case "answer-call": {
+      // Callee accepted; caller now creates the offer.
+      if (role !== "caller") return;
+      setCall("Connecting…");
+      await createPeer();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      send({ type: "offer", target: currentPeer, sdp: offer });
+      break;
+    }
+
+    case "offer": {
+      if (role !== "callee") return;
+      await createPeer();
+      await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+      await drainCandidates();
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      send({ type: "answer", target: currentPeer, sdp: answer });
+      setCall("Connecting…");
+      break;
+    }
+
+    case "answer":
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+        await drainCandidates();
+      }
+      break;
+
+    case "ice":
+      if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+        try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+      } else {
+        pendingCandidates.push(msg.candidate);
+      }
+      break;
+
+    case "call-rejected":
+      setCall(msg.reason === "offline" ? "User is offline." : "Call rejected.");
+      teardownCall();
+      break;
+
+    case "call-ended":
+      setCall("Call ended by the other party.");
+      teardownCall();
+      break;
+  }
+}
+
+async function drainCandidates() {
+  for (const c of pendingCandidates) {
+    try { await pc.addIceCandidate(c); } catch (e) { console.warn(e); }
+  }
+  pendingCandidates = [];
+}
+
+async function createPeer() {
+  if (pc) return;
+  pc = new RTCPeerConnection({ iceServers });
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate && currentPeer) send({ type: "ice", target: currentPeer, candidate: e.candidate });
+  };
+  pc.ontrack = (e) => {
+    if (e.streams && e.streams[0]) $("remoteAudio").srcObject = e.streams[0];
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc && pc.connectionState === "connected") {
+      setCall("Connected.");
+      $("hangupButton").disabled = false;
+    } else if (pc && (pc.connectionState === "failed" || pc.connectionState === "disconnected")) {
+      setCall("Connection lost.");
+    }
+  };
+
+  localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+}
+
+$("callButton").addEventListener("click", async () => {
+  const target = $("callTarget").value.trim().toLowerCase();
+  if (!target) { setCall("Enter who to call."); return; }
+  if (target === myEmail) { setCall("You can't call yourself."); return; }
+  currentPeer = target;
+  role = "caller";
+  $("callButton").disabled = true;
+  setCall(`Calling ${target}…`);
+  send({ type: "call", target });
+});
+
+$("acceptButton").addEventListener("click", async () => {
+  hide($("incomingCall"));
+  $("callButton").disabled = true;
+  setCall(`In call with ${currentPeer}…`);
+  // Prepare to receive the offer, then signal acceptance.
+  await createPeer();
+  send({ type: "answer-call", target: currentPeer });
+});
+
+$("rejectButton").addEventListener("click", () => {
+  hide($("incomingCall"));
+  send({ type: "reject-call", target: currentPeer });
+  currentPeer = null;
+  role = null;
+});
+
+$("hangupButton").addEventListener("click", () => {
+  if (currentPeer) send({ type: "hangup", target: currentPeer });
+  setCall("Call ended.");
+  teardownCall();
+});
+
+function teardownCall() {
+  if (pc) { try { pc.close(); } catch {} pc = null; }
+  if (localStream) { localStream.getTracks().forEach((t) => t.stop()); localStream = null; }
+  pendingCandidates = [];
+  currentPeer = null;
+  role = null;
+  $("remoteAudio").srcObject = null;
+  $("hangupButton").disabled = true;
+  $("callButton").disabled = !(ws && ws.readyState === WebSocket.OPEN);
+  hide($("incomingCall"));
+}
+
+// ---------------------------------------------------------------------------
+bootstrap();

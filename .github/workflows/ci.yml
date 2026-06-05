@@ -1,0 +1,23 @@
+name: CI
+
+# Deployment is handled by the native Cloudflare <-> GitHub integration
+# (Workers Builds) on pushes to main. This workflow only runs the test suite,
+# including the abuse-resistance tests, on PRs and pushes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Unit & integration tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test

@@ -1,20 +1,84 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Pierre Calls Test</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pierre Fouquet Calls</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <h1>A Simple Audio Call</h1>
-    <div>
-        <label for="callRecipient">Call User ID:</label>
-        <input type="text" id="callRecipient" placeholder="Enter recipient ID">
-        <button id="callButton">Call</button>
+  <header class="topbar">
+    <h1>Pierre Fouquet Calls</h1>
+    <div id="account" class="account hidden">
+      <span id="accountEmail"></span>
+      <button id="logoutButton" class="link">Sign out</button>
     </div>
-    <button id="hangupButton" disabled>Hang Up</button>
-    <p id="callStatus"></p>
-    <audio id="remoteAudio" autoplay></audio>
+  </header>
 
-    <script src="script.js"></script>
+  <main>
+    <!-- Login -->
+    <section id="loginView" class="card hidden">
+      <h2>Sign in</h2>
+      <p class="muted">No password — we email you a 6-digit code.</p>
+
+      <div id="emailStep">
+        <label for="email">Email</label>
+        <input type="email" id="email" autocomplete="email" placeholder="you@example.com" />
+        <button id="sendCodeButton">Send code</button>
+      </div>
+
+      <div id="codeStep" class="hidden">
+        <label for="code">Enter the 6-digit code sent to <span id="codeEmailLabel"></span></label>
+        <input type="text" id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456" />
+        <div class="row">
+          <button id="verifyButton">Verify &amp; sign in</button>
+          <button id="backButton" class="link">Use a different email</button>
+        </div>
+      </div>
+
+      <p id="loginStatus" class="status"></p>
+    </section>
+
+    <!-- App -->
+    <section id="appView" class="hidden">
+      <div class="card">
+        <h2>Call a user</h2>
+        <p class="muted">
+          Connection: <strong id="connStatus">connecting…</strong>
+        </p>
+        <label for="callTarget">Their email</label>
+        <input type="email" id="callTarget" placeholder="friend@example.com" />
+        <div class="row">
+          <button id="callButton" disabled>Call</button>
+          <button id="hangupButton" disabled>Hang up</button>
+        </div>
+        <p id="callStatus" class="status"></p>
+        <audio id="remoteAudio" autoplay></audio>
+      </div>
+
+      <div id="incomingCall" class="card incoming hidden">
+        <h2>Incoming call</h2>
+        <p>From <strong id="incomingFrom"></strong></p>
+        <div class="row">
+          <button id="acceptButton">Accept</button>
+          <button id="rejectButton" class="danger">Reject</button>
+        </div>
+      </div>
+
+      <div class="card disabled-card">
+        <h2>External (phone) calling</h2>
+        <p class="muted">
+          Dialing real mobiles and landlines requires a connected telephone
+          carrier. This is built and tested but switched <strong>off</strong>
+          until a carrier is wired in — so there are no charges.
+        </p>
+        <label for="externalNumber">Phone number</label>
+        <input type="tel" id="externalNumber" placeholder="+44…" disabled />
+        <button id="dialButton" disabled>Dial (unavailable)</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
 </body>
 </html>

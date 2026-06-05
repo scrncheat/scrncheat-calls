@@ -1,5 +1,5 @@
 name = "pierrefouquet-calls"
-main = "./worker.js"
+main = "./src/worker.js"
 compatibility_date = "2025-08-13"
 
 routes = [
@@ -10,5 +10,48 @@ routes = [
 directory = "./public"
 binding = "ASSETS"
 
+[observability]
+enabled = true
+
 [observability.logs]
 enabled = true
+
+# Distributed (OpenTelemetry) tracing for the Worker. head_sampling_rate = 1
+# traces 100% of requests; lower it (e.g. 0.1) to reduce cost once traffic grows.
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+
+# Non-secret configuration. Secrets (OTP_PEPPER, TURN_API_TOKEN, carrier creds)
+# are set in the Cloudflare dashboard, NOT here.
+[vars]
+APP_ORIGIN = "https://calls.pierrefouquet.co.uk"
+EMAIL_FROM = "no-reply@pierrefouquet.co.uk"
+EMAIL_FROM_NAME = "Pierre Fouquet Calls"
+# External (PSTN) calling stays OFF until a carrier is deliberately wired in.
+TELEPHONY_ENABLED = "false"
+DEFAULT_ALLOWED_PREFIXES = "+44,+33"
+LOGIN_CODE_TTL_SECONDS = "600"
+SESSION_TTL_SECONDS = "2592000"
+
+# Relational store: users, sessions, login codes, verified numbers, call logs, counters.
+[[d1_databases]]
+binding = "DB"
+database_name = "pierrefouquet-calls-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "./migrations"
+
+# Cloudflare Email Service native binding (matches pierrefouquet/agentic-inbox).
+# On the Workers Paid plan this sends to arbitrary recipients once the sending
+# domain is authenticated. No destination_address restriction = send anywhere.
+[[send_email]]
+name = "EMAIL"
+
+# Signaling registry / 1:1 relay for in-app WebRTC calls.
+[[durable_objects.bindings]]
+name = "SIGNALING"
+class_name = "SignalingRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalingRoom"]
