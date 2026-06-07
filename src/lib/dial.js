@@ -65,6 +65,25 @@ export async function authorizeAndDial(env, user, toRaw, numberId, opts = {}) {
     return { ok: false, reason: decision.reason };
   }
 
+  // One PSTN call at a time per user. (With the mock provider calls complete
+  // instantly, so this never trips today; it guards a real carrier in Phase 4.)
+  const active = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM call_logs
+     WHERE user_id = ? AND kind = 'pstn' AND status IN ('initiated','ringing','in-progress')`
+  )
+    .bind(user.id)
+    .first();
+  if (active && active.n > 0) {
+    await logCall(env, user.id, {
+      to_e164: toE164,
+      from_e164: decision.fromE164,
+      status: "blocked",
+      block_reason: "already_on_call",
+      started_at: now,
+    });
+    return { ok: false, reason: "already_on_call" };
+  }
+
   const res = await getProvider(env).placeCall({
     fromE164: decision.fromE164,
     toE164,

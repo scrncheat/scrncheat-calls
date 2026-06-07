@@ -217,10 +217,17 @@ async function handleSignal(msg) {
       }
       break;
 
-    case "call-rejected":
-      setCall(msg.reason === "offline" ? "User is offline." : "Call rejected.");
+    case "call-rejected": {
+      const reason =
+        msg.reason === "offline"
+          ? "User is offline."
+          : msg.reason === "busy"
+          ? "User is busy on another call."
+          : "Call rejected.";
+      setCall(reason);
       teardownCall();
       break;
+    }
 
     case "call-ended":
       setCall("Call ended by the other party.");

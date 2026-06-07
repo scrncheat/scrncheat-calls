@@ -1,31 +1,18 @@
 // Signaling registry + 1:1 relay for in-app WebRTC calls.
 //
-// A single global Durable Object instance holds the live WebSocket connections,
-// using WebSocket Hibernation so it costs nothing while idle. Each socket is
-// tagged with its authenticated handle (the user's email) and the handle is
-// stored server-side via serializeAttachment — the relay NEVER trusts a
-// client-supplied sender id. Targets are resolved from the DO's own connection
-// set (ctx.getWebSockets(tag)), so a client cannot impersonate or address
-// arbitrary internal state.
+// A single global Durable Object holds the live WebSocket connections, using
+// WebSocket Hibernation so it costs nothing while idle. Each socket is tagged
+// with its authenticated handle (the user's email) stored via
+// serializeAttachment — the relay NEVER trusts a client-supplied sender id, and
+// targets are resolved from the DO's own connection set.
+//
+// Concurrency: a user may be in at most ONE call at a time. "Busy" state lives
+// in the socket attachment (survives hibernation); a user counts as busy if any
+// of their sockets is in a call. A call to/from a busy user is rejected.
 
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MSG_WINDOW_MS = 10_000;
 const MSG_MAX_PER_WINDOW = 120;
-
-function outgoingType(t) {
-  switch (t) {
-    case "call":
-      return "incoming-call";
-    case "reject-call":
-      return "call-rejected";
-    case "hangup":
-      return "call-ended";
-    default:
-      return t; // answer-call, offer, answer, ice
-  }
-}
-
-const PASSTHROUGH = new Set(["answer-call", "reject-call", "offer", "answer", "ice", "hangup"]);
 
 export class SignalingRoom {
   constructor(ctx, env) {
@@ -42,9 +29,8 @@ export class SignalingRoom {
     }
 
     const { 0: client, 1: server } = new WebSocketPair();
-    // Tag the socket by handle so getWebSockets(handle) routes to this user.
     this.ctx.acceptWebSocket(server, [handle]);
-    server.serializeAttachment({ handle, windowStart: Date.now(), count: 0 });
+    server.serializeAttachment({ handle, windowStart: Date.now(), count: 0, busyWith: null });
     server.send(JSON.stringify({ type: "registered", handle }));
 
     return new Response(null, { status: 101, webSocket: client });
@@ -68,12 +54,11 @@ export class SignalingRoom {
       count = 0;
     }
     count += 1;
-    ws.serializeAttachment({ handle, windowStart, count });
+    ws.serializeAttachment({ ...att, windowStart, count });
     if (count > MSG_MAX_PER_WINDOW) {
       ws.close(1008, "rate limit");
       return;
     }
-
     if (!handle) return;
 
     let msg;
@@ -88,30 +73,67 @@ export class SignalingRoom {
     const target = typeof msg.target === "string" ? msg.target.toLowerCase() : null;
     if (!target || target === senderId) return;
 
-    if (msg.type === "call") {
-      const delivered = this.sendTo(target, { type: "incoming-call", senderId });
-      if (delivered === 0) {
-        this.sendTo(senderId, { type: "call-rejected", senderId: target, reason: "offline" });
+    switch (msg.type) {
+      case "call": {
+        // One call at a time: reject if either party is already busy.
+        if (this.isUserBusy(senderId) || this.isUserBusy(target)) {
+          ws.send(JSON.stringify({ type: "call-rejected", senderId: target, reason: "busy" }));
+          return;
+        }
+        const delivered = this.sendTo(target, { type: "incoming-call", senderId });
+        if (delivered === 0) {
+          ws.send(JSON.stringify({ type: "call-rejected", senderId: target, reason: "offline" }));
+          return;
+        }
+        this.setBusy(ws, target); // caller is now committed to this call
+        return;
       }
-      return;
-    }
 
-    if (!PASSTHROUGH.has(msg.type)) return;
+      case "answer-call": {
+        if (this.isUserBusy(senderId)) return; // already in a call elsewhere
+        this.setBusy(ws, target);
+        this.sendTo(target, { type: "answer-call", senderId });
+        return;
+      }
 
-    const payload = { type: outgoingType(msg.type), senderId };
-    if (msg.type === "offer" || msg.type === "answer") {
-      if (!msg.sdp || typeof msg.sdp !== "object") return;
-      payload.sdp = msg.sdp;
+      case "reject-call": {
+        this.clearUserBusy(target); // the caller was holding a "calling" state
+        this.sendTo(target, { type: "call-rejected", senderId, reason: "rejected" });
+        return;
+      }
+
+      case "hangup": {
+        this.clearUserBusy(senderId);
+        this.clearUserBusy(target);
+        this.sendTo(target, { type: "call-ended", senderId });
+        return;
+      }
+
+      case "offer":
+      case "answer": {
+        if (!msg.sdp || typeof msg.sdp !== "object") return;
+        this.sendTo(target, { type: msg.type, senderId, sdp: msg.sdp });
+        return;
+      }
+
+      case "ice": {
+        if (!msg.candidate) return;
+        this.sendTo(target, { type: "ice", senderId, candidate: msg.candidate });
+        return;
+      }
+
+      default:
+        return;
     }
-    if (msg.type === "ice") {
-      if (!msg.candidate) return;
-      payload.candidate = msg.candidate;
-    }
-    this.sendTo(target, payload);
   }
 
   webSocketClose(ws) {
-    // No bookkeeping required: getWebSockets() stops returning a closed socket.
+    // If this socket was in a call, end it for the peer and free them.
+    const att = ws.deserializeAttachment() || {};
+    if (att.busyWith) {
+      this.sendTo(att.busyWith, { type: "call-ended", senderId: att.handle });
+      this.clearUserBusy(att.busyWith);
+    }
     try {
       ws.close();
     } catch {
@@ -123,12 +145,37 @@ export class SignalingRoom {
     // Socket is torn down automatically.
   }
 
+  // --- concurrency helpers (a user is busy if any of their sockets is) ---
+
+  isUserBusy(handle) {
+    for (const s of this.ctx.getWebSockets(handle)) {
+      const a = s.deserializeAttachment();
+      if (a && a.busyWith) return true;
+    }
+    return false;
+  }
+
+  setBusy(ws, peer) {
+    const a = ws.deserializeAttachment() || {};
+    a.busyWith = peer;
+    ws.serializeAttachment(a);
+  }
+
+  clearUserBusy(handle) {
+    for (const s of this.ctx.getWebSockets(handle)) {
+      const a = s.deserializeAttachment() || {};
+      if (a.busyWith) {
+        a.busyWith = null;
+        s.serializeAttachment(a);
+      }
+    }
+  }
+
   /** Send `payload` to every live socket for `targetHandle`; returns the count. */
   sendTo(targetHandle, payload) {
-    const sockets = this.ctx.getWebSockets(targetHandle);
     const data = JSON.stringify(payload);
     let n = 0;
-    for (const s of sockets) {
+    for (const s of this.ctx.getWebSockets(targetHandle)) {
       try {
         s.send(data);
         n += 1;

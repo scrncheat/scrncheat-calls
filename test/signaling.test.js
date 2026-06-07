@@ -109,3 +109,74 @@ describe("signaling — abuse resistance", () => {
     expect(ev.code).toBe(1009);
   });
 });
+
+describe("signaling — one call at a time", () => {
+  async function connect(email) {
+    const ws = (await openWs(await sessionFor(email))).webSocket;
+    ws.accept();
+    await nextJson(ws); // "registered"
+    return ws;
+  }
+
+  async function establishCall(a, aEmail, b, bEmail) {
+    const incoming = nextJson(b);
+    a.send(JSON.stringify({ type: "call", target: bEmail }));
+    await incoming;
+    const answered = nextJson(a);
+    b.send(JSON.stringify({ type: "answer-call", target: aEmail }));
+    await answered;
+  }
+
+  it("rejects calling a user who is already in a call", async () => {
+    const a = await connect("busy-a@example.com");
+    const b = await connect("busy-b@example.com");
+    const c = await connect("busy-c@example.com");
+    await establishCall(a, "busy-a@example.com", b, "busy-b@example.com");
+
+    const reply = nextJson(c);
+    c.send(JSON.stringify({ type: "call", target: "busy-b@example.com" }));
+    const msg = await reply;
+    expect(msg.type).toBe("call-rejected");
+    expect(msg.reason).toBe("busy");
+
+    a.close();
+    b.close();
+    c.close();
+  });
+
+  it("rejects starting a second call while already calling", async () => {
+    const a = await connect("sec-a@example.com");
+    const b = await connect("sec-b@example.com");
+
+    const incoming = nextJson(b);
+    a.send(JSON.stringify({ type: "call", target: "sec-b@example.com" }));
+    await incoming; // A is now busy
+
+    const reply = nextJson(a);
+    a.send(JSON.stringify({ type: "call", target: "sec-c@example.com" }));
+    const msg = await reply;
+    expect(msg.type).toBe("call-rejected");
+    expect(msg.reason).toBe("busy");
+
+    a.close();
+    b.close();
+  });
+
+  it("frees the user after hangup so they can call again", async () => {
+    const a = await connect("free-a@example.com");
+    const b = await connect("free-b@example.com");
+    await establishCall(a, "free-a@example.com", b, "free-b@example.com");
+
+    const ended = nextJson(b);
+    a.send(JSON.stringify({ type: "hangup", target: "free-b@example.com" }));
+    await ended; // call-ended
+
+    const incoming = nextJson(b);
+    a.send(JSON.stringify({ type: "call", target: "free-b@example.com" }));
+    const msg = await incoming;
+    expect(msg.type).toBe("incoming-call");
+
+    a.close();
+    b.close();
+  });
+});

@@ -131,4 +131,17 @@ describe("external dial authorization (mock carrier)", () => {
       .all();
     expect(results[0]).toMatchObject({ status: "blocked", block_reason: "destination_blocked" });
   });
+
+  it("blocks a second concurrent PSTN call (one call at a time)", async () => {
+    const u = await user("concurrent@example.com");
+    const numId = await verifiedNumberFor(u, "+447400123426");
+    // Seed an in-progress PSTN call for this user.
+    await env.DB.prepare(
+      "INSERT INTO call_logs (id, user_id, kind, direction, status, started_at) VALUES (?, ?, 'pstn', 'outbound', 'in-progress', ?)"
+    )
+      .bind("seed-active-1", u.id, Date.now())
+      .run();
+    const r = await authorizeAndDial(env, u, "+33123456789", numId, { enabled: true });
+    expect(r).toMatchObject({ ok: false, reason: "already_on_call" });
+  });
 });
