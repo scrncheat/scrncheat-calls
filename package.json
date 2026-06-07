@@ -17,9 +17,9 @@
     "libphonenumber-js": "^1.11.17"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.8.19",
+    "@cloudflare/vitest-pool-workers": "^0.16.13",
     "@playwright/test": "^1.49.1",
-    "vitest": "~3.2.4",
+    "vitest": "~4.1.8",
     "wrangler": "^4.40.0"
   }
 }
