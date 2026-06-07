@@ -1,0 +1,25 @@
+{
+  "name": "pierrefouquet-calls",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Workers WebRTC calling app — in-app calls + (deferred) PSTN, passwordless auth.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "migrate:local": "wrangler d1 migrations apply pierrefouquet-calls-db --local",
+    "migrate:remote": "wrangler d1 migrations apply pierrefouquet-calls-db --remote"
+  },
+  "dependencies": {
+    "libphonenumber-js": "^1.11.17"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.8.19",
+    "@playwright/test": "^1.49.1",
+    "vitest": "~3.2.4",
+    "wrangler": "^4.40.0"
+  }
+}
