@@ -12,6 +12,24 @@ function toBase64Url(bytes) {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+function toBytes(input) {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  return new TextEncoder().encode(String(input));
+}
+
+/** Base64url (no padding) of a string or byte buffer — used for JWT parts. */
+export function base64UrlEncode(input) {
+  return toBase64Url(toBytes(input));
+}
+
+/** Standard base64 of a string or byte buffer — used for Basic auth + HMAC sigs. */
+export function base64Encode(input) {
+  let bin = "";
+  for (const b of toBytes(input)) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
 /** UUID v4 (random). */
 export function randomId() {
   return crypto.randomUUID();

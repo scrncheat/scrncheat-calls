@@ -10,6 +10,19 @@ export class MockProvider {
     return "mock";
   }
 
+  // The mock completes calls synchronously in placeCall(), so dial.js takes the
+  // server-side path (reserve -> place -> release) rather than the browser ticket
+  // flow a real WebRTC carrier uses.
+  get placesCallsServerSide() {
+    return true;
+  }
+
+  // Ownership is proven by an in-house OTP we generate and deliver (the default
+  // style). numbers.js uses this to keep the generate-code/check-hash flow.
+  get verificationStyle() {
+    return "otp";
+  }
+
   /** Line-type lookup (a real provider would use a Lookup/HLR API). */
   async lookupLineType(e164) {
     const c = classify(e164);

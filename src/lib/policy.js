@@ -90,5 +90,17 @@ export function evaluateDialPolicy(o) {
     return { allowed: false, reason: "rate_limited" };
   }
 
+  // Daily spend cap (toll-fraud backstop). Off unless a cap is configured. Cost
+  // is an estimate accrued from call duration, so the cap can be exceeded by at
+  // most one in-flight call (bounded by the per-call time limit).
+  if (
+    typeof o.dailyCapMicro === "number" &&
+    o.dailyCapMicro >= 0 &&
+    typeof o.dailySpentMicro === "number" &&
+    o.dailySpentMicro >= o.dailyCapMicro
+  ) {
+    return { allowed: false, reason: "spend_cap" };
+  }
+
   return { allowed: true, fromE164: o.verifiedNumber.e164 };
 }

@@ -27,7 +27,9 @@ import {
   confirmNumber,
   deleteNumber,
 } from "./lib/numbers.js";
-import { authorizeAndDial } from "./lib/dial.js";
+import { authorizeAndDial, redeemDialTicket, finalizeCallByStatus } from "./lib/dial.js";
+import { getProvider } from "./lib/telephony/index.js";
+import { isValidTwilioRequest } from "./lib/telephony/twilio-signature.js";
 import { SignalingRoom } from "./signaling-do.js";
 
 export { SignalingRoom };
@@ -100,8 +102,14 @@ const ROUTES = [
   { method: "POST", path: "/api/numbers/:id/verify", handler: hSendVerify, auth: true, csrf: true },
   { method: "POST", path: "/api/numbers/:id/confirm", handler: hConfirmNumber, auth: true, csrf: true },
   { method: "DELETE", path: "/api/numbers/:id", handler: hDeleteNumber, auth: true, csrf: true },
+  { method: "GET", path: "/api/voice/token", handler: hVoiceToken, auth: true, csrf: false },
   { method: "POST", path: "/api/voice/dial", handler: hDial, auth: true, csrf: true },
   { method: "GET", path: "/api/calls", handler: hCalls, auth: true, csrf: false },
+
+  // Carrier webhooks: authenticated by the Twilio request signature (not the
+  // session cookie/CSRF), since Twilio — not the browser — calls these.
+  { method: "POST", path: "/api/voice/twiml", handler: hTwiml, auth: false, csrf: false },
+  { method: "POST", path: "/api/voice/twilio/status", handler: hTwilioStatus, auth: false, csrf: false },
 ];
 
 async function handleApi(request, env, url) {
@@ -273,9 +281,12 @@ async function hSendVerify(request, env, c) {
     if (r.error === "not_found") return notFound();
     return badRequest(r.error);
   }
-  // The code is delivered by the carrier; only exposed over HTTP in dev/test.
+  // The OTP is delivered by the carrier; only exposed over HTTP in dev/test.
+  // A carrier-driven displayCode (Twilio Verified Caller ID) is meant to be
+  // shown to the user, so it is always returned.
   const dev = env.EXPOSE_CODES === "1" && r.devCode ? { devCode: r.devCode } : {};
-  return ok({ channel: r.channel, ...dev });
+  const display = r.displayCode ? { displayCode: r.displayCode } : {};
+  return ok({ channel: r.channel, ...display, ...dev });
 }
 
 async function hConfirmNumber(request, env, c) {
@@ -302,7 +313,9 @@ async function hDial(request, env, c) {
     const status = r.reason === "rate_limited" ? 429 : 403;
     return jsonWithHeaders({ ok: false, error: r.reason }, status, new Headers());
   }
-  return ok({ callRef: r.callRef, from: r.from, status: r.status });
+  // `ticket` (browser-initiated carrier) or `callRef` (server-side mock) — the
+  // client passes the ticket opaquely to the Voice SDK; it never sees To/callerId.
+  return ok({ ticket: r.ticket, callRef: r.callRef, from: r.from, status: r.status });
 }
 
 async function hCalls(request, env, c) {
@@ -313,6 +326,75 @@ async function hCalls(request, env, c) {
     .bind(c.user.id)
     .all();
   return ok({ calls: results || [] });
+}
+
+// --- Browser softphone: mint a short-lived carrier Access Token (session-gated) ---
+
+async function hVoiceToken(request, env, c) {
+  if (env.TELEPHONY_ENABLED !== "true") return badRequest("telephony_disabled");
+  const provider = getProvider(env);
+  if (typeof provider.createAccessToken !== "function") return badRequest("token_unsupported");
+  try {
+    const identity = String(c.user.email || "").toLowerCase();
+    const token = await provider.createAccessToken(identity);
+    return ok({ token, identity });
+  } catch {
+    return serverError("token_error");
+  }
+}
+
+// --- Twilio carrier webhooks (authenticated by request signature) ---
+
+async function readTwilioForm(request, env) {
+  const signature = request.headers.get("X-Twilio-Signature") || "";
+  const text = await request.text();
+  const params = Object.fromEntries(new URLSearchParams(text));
+  const valid = await isValidTwilioRequest({
+    authToken: env.TWILIO_AUTH_TOKEN,
+    url: request.url,
+    params,
+    signature,
+  });
+  return { valid, params };
+}
+
+function xmlResponse(body, status = 200) {
+  return new Response(`<?xml version="1.0" encoding="UTF-8"?>${body}`, {
+    status,
+    headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
+
+// Twilio fetches this when the browser places a call. The browser passed only an
+// opaque ticket; we redeem it to recover the authorized caller ID + destination
+// and emit the <Dial>. Identity is taken from From=client:<handle> (token-derived).
+async function hTwiml(request, env) {
+  const { valid, params } = await readTwilioForm(request, env);
+  if (!valid) return xmlResponse("<Response><Reject/></Response>", 403);
+
+  const from = params.From || "";
+  const clientHandle = from.startsWith("client:") ? from.slice("client:".length).toLowerCase() : "";
+  const r = await redeemDialTicket(env, {
+    ticketId: params.ticket || "",
+    callSid: params.CallSid || "",
+    clientHandle,
+  });
+  if (!r.ok) return xmlResponse("<Response><Reject/></Response>");
+
+  const action = `${env.APP_ORIGIN}/api/voice/twilio/status`;
+  return xmlResponse(
+    `<Response><Dial answerOnBridge="true" callerId="${r.fromE164}" timeLimit="${r.timeLimitSec}" ` +
+      `action="${action}" method="POST"><Number>${r.toE164}</Number></Dial></Response>`
+  );
+}
+
+// Twilio posts call-status here (via the <Dial> action). We record the outcome
+// and release one-call-at-a-time presence on a terminal status.
+async function hTwilioStatus(request, env) {
+  const { valid, params } = await readTwilioForm(request, env);
+  if (!valid) return xmlResponse("<Response/>", 403);
+  await finalizeCallByStatus(env, params);
+  return xmlResponse("<Response/>");
 }
 
 // ---------------------------------------------------------------------------
@@ -346,9 +428,12 @@ async function handleWsUpgrade(request, env, url) {
 // Static assets (SPA) with security headers
 // ---------------------------------------------------------------------------
 
+// connect-src also allows Twilio's Voice SDK signaling (wss) and event gateway
+// (https) so the browser softphone can reach the carrier. Media (DTLS/SRTP) is
+// not governed by CSP. The SDK itself is self-hosted, so script-src stays 'self'.
 const CSP =
-  "default-src 'self'; connect-src 'self'; media-src 'self' blob:; " +
-  "img-src 'self' data:; style-src 'self'; script-src 'self'; " +
+  "default-src 'self'; connect-src 'self' https://*.twilio.com wss://*.twilio.com; " +
+  "media-src 'self' blob:; img-src 'self' data:; style-src 'self'; script-src 'self'; " +
   "base-uri 'none'; frame-ancestors 'none'";
 
 async function serveAsset(request, env) {
