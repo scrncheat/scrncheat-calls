@@ -13,14 +13,10 @@ binding = "ASSETS"
 [observability]
 enabled = true
 
+# Workers Logs. (Tracing — [observability.traces] — was removed: it's a beta
+# feature the deploy API rejected; re-enable it from the Cloudflare dashboard.)
 [observability.logs]
 enabled = true
-
-# Distributed (OpenTelemetry) tracing for the Worker. head_sampling_rate = 1
-# traces 100% of requests; lower it (e.g. 0.1) to reduce cost once traffic grows.
-[observability.traces]
-enabled = true
-head_sampling_rate = 1
 
 # Non-secret configuration. Secrets (OTP_PEPPER, TURN_API_TOKEN, carrier creds)
 # are set in the Cloudflare dashboard, NOT here.
