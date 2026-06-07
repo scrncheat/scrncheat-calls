@@ -1,6 +1,8 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import { getOrCreateUser, createSession } from "../src/lib/auth.js";
+import { registerNumber, sendNumberVerification, confirmNumber } from "../src/lib/numbers.js";
+import { authorizeAndDial } from "../src/lib/dial.js";
 
 const ORIGIN = "https://calls.example";
 
@@ -175,6 +177,66 @@ describe("signaling — one call at a time", () => {
     a.send(JSON.stringify({ type: "call", target: "free-b@example.com" }));
     const msg = await incoming;
     expect(msg.type).toBe("incoming-call");
+
+    a.close();
+    b.close();
+  });
+});
+
+describe("signaling — in-app and PSTN are linked", () => {
+  async function connectWs(email) {
+    const ws = (await openWs(await sessionFor(email))).webSocket;
+    ws.accept();
+    await nextJson(ws); // "registered"
+    return ws;
+  }
+
+  async function verifyNum(userId, e164) {
+    const reg = await registerNumber(env, userId, e164);
+    const send = await sendNumberVerification(env, userId, reg.id);
+    await confirmNumber(env, userId, reg.id, send.devCode);
+    return reg.id;
+  }
+
+  const presence = () => env.SIGNALING.get(env.SIGNALING.idFromName("global"));
+
+  it("a PSTN call blocks an incoming in-app call", async () => {
+    const callee = "linkpstn-callee@example.com";
+    const caller = await connectWs("linkpstn-caller@example.com");
+    // Reserve a PSTN call for the callee via the presence service.
+    await presence().fetch("https://signaling/control/pstn-begin", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handle: callee }),
+    });
+
+    const reply = nextJson(caller);
+    caller.send(JSON.stringify({ type: "call", target: callee }));
+    const msg = await reply;
+    expect(msg.type).toBe("call-rejected");
+    expect(msg.reason).toBe("busy");
+    caller.close();
+  });
+
+  it("an in-app call blocks a PSTN dial for the same user", async () => {
+    const aEmail = "linkapp-a@example.com";
+    const bEmail = "linkapp-b@example.com";
+    const a = await connectWs(aEmail);
+    const b = await connectWs(bEmail);
+
+    // Establish an in-app call A <-> B.
+    const incoming = nextJson(b);
+    a.send(JSON.stringify({ type: "call", target: bEmail }));
+    await incoming;
+    const answered = nextJson(a);
+    b.send(JSON.stringify({ type: "answer-call", target: aEmail }));
+    await answered;
+
+    // A now tries to place a phone call -> blocked by the same presence.
+    const u = await getOrCreateUser(env, aEmail);
+    const numId = await verifyNum(u.id, "+447400123430");
+    const r = await authorizeAndDial(env, u, "+33123456789", numId, { enabled: true });
+    expect(r).toMatchObject({ ok: false, reason: "already_on_call" });
 
     a.close();
     b.close();

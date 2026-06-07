@@ -1,14 +1,15 @@
-// Signaling registry + 1:1 relay for in-app WebRTC calls.
+// Signaling registry + 1:1 relay for in-app WebRTC calls, and the in-app side
+// of the app's "one call at a time" rule.
 //
-// A single global Durable Object holds the live WebSocket connections, using
-// WebSocket Hibernation so it costs nothing while idle. Each socket is tagged
+// A single global Durable Object holds the live WebSocket connections (using
+// WebSocket Hibernation so it costs nothing while idle). Each socket is tagged
 // with its authenticated handle (the user's email) stored via
-// serializeAttachment — the relay NEVER trusts a client-supplied sender id, and
-// targets are resolved from the DO's own connection set.
+// serializeAttachment — the relay NEVER trusts a client-supplied sender id.
 //
-// Concurrency: a user may be in at most ONE call at a time. "Busy" state lives
-// in the socket attachment (survives hibernation); a user counts as busy if any
-// of their sockets is in a call. A call to/from a busy user is rejected.
+// Presence: in-app "busy" lives in the socket attachment. PSTN presence is
+// owned durably by the Worker's dial gate in D1; the Worker also mirrors it into
+// this DO's in-memory set via the /control API so an in-app call can be blocked
+// while the peer is on a phone call. The DO itself performs NO storage I/O.
 
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MSG_WINDOW_MS = 10_000;
@@ -18,10 +19,15 @@ export class SignalingRoom {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    // Best-effort mirror of handles currently on a PSTN call (authoritative copy
+    // is in D1). Used only to block in-app calls to someone on the phone.
+    this.pstnBusy = new Set();
   }
 
   async fetch(request) {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/control/")) return this.handleControl(request, url);
+
     const handle = (url.searchParams.get("handle") || "").toLowerCase();
     if (!handle) return new Response("missing handle", { status: 400 });
     if (request.headers.get("Upgrade") !== "websocket") {
@@ -34,6 +40,35 @@ export class SignalingRoom {
     server.send(JSON.stringify({ type: "registered", handle }));
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // Internal presence API, called by the Worker's dial gate (clients can't
+  // address the DO directly). No storage I/O here — in-memory only.
+  async handleControl(request, url) {
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      /* empty */
+    }
+    const handle = String(body.handle || "").toLowerCase();
+    const reply = (obj, status = 200) =>
+      new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+    if (!handle) return reply({ error: "missing_handle" }, 400);
+
+    switch (url.pathname) {
+      case "/control/busy":
+        // In-app busy only; the Worker checks D1 for PSTN.
+        return reply({ busy: this.isInAppBusy(handle) });
+      case "/control/pstn-begin":
+        this.pstnBusy.add(handle);
+        return reply({ ok: true });
+      case "/control/pstn-end":
+        this.pstnBusy.delete(handle);
+        return reply({ ok: true });
+      default:
+        return reply({ error: "not_found" }, 404);
+    }
   }
 
   async webSocketMessage(ws, raw) {
@@ -75,8 +110,8 @@ export class SignalingRoom {
 
     switch (msg.type) {
       case "call": {
-        // One call at a time: reject if either party is already busy.
-        if (this.isUserBusy(senderId) || this.isUserBusy(target)) {
+        // One call at a time (covers the peer being on a PSTN call too).
+        if (this.isBusy(senderId) || this.isBusy(target)) {
           ws.send(JSON.stringify({ type: "call-rejected", senderId: target, reason: "busy" }));
           return;
         }
@@ -90,7 +125,7 @@ export class SignalingRoom {
       }
 
       case "answer-call": {
-        if (this.isUserBusy(senderId)) return; // already in a call elsewhere
+        if (this.isBusy(senderId)) return; // already in a call elsewhere
         this.setBusy(ws, target);
         this.sendTo(target, { type: "answer-call", senderId });
         return;
@@ -128,7 +163,6 @@ export class SignalingRoom {
   }
 
   webSocketClose(ws) {
-    // If this socket was in a call, end it for the peer and free them.
     const att = ws.deserializeAttachment() || {};
     if (att.busyWith) {
       this.sendTo(att.busyWith, { type: "call-ended", senderId: att.handle });
@@ -145,14 +179,18 @@ export class SignalingRoom {
     // Socket is torn down automatically.
   }
 
-  // --- concurrency helpers (a user is busy if any of their sockets is) ---
+  // --- presence helpers ---
 
-  isUserBusy(handle) {
+  isInAppBusy(handle) {
     for (const s of this.ctx.getWebSockets(handle)) {
       const a = s.deserializeAttachment();
       if (a && a.busyWith) return true;
     }
     return false;
+  }
+
+  isBusy(handle) {
+    return this.isInAppBusy(handle) || this.pstnBusy.has(handle);
   }
 
   setBusy(ws, peer) {

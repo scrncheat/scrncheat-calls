@@ -10,6 +10,8 @@ import { randomId } from "./crypto.js";
 
 const HOUR = 3600;
 const HOURLY_CALL_LIMIT = 20;
+// Backstop so a missed end-of-call signal can't wedge a user permanently.
+const MAX_PSTN_BUSY_MS = 4 * 60 * 60 * 1000;
 
 /**
  * @param {object} [opts]
@@ -65,15 +67,20 @@ export async function authorizeAndDial(env, user, toRaw, numberId, opts = {}) {
     return { ok: false, reason: decision.reason };
   }
 
-  // One PSTN call at a time per user. (With the mock provider calls complete
-  // instantly, so this never trips today; it guards a real carrier in Phase 4.)
-  const active = await env.DB.prepare(
-    `SELECT COUNT(*) AS n FROM call_logs
-     WHERE user_id = ? AND kind = 'pstn' AND status IN ('initiated','ringing','in-progress')`
-  )
-    .bind(user.id)
+  // One call at a time per user — unified across in-app and PSTN. In-app "busy"
+  // is owned by the signaling DO (socket attachments); PSTN presence is owned
+  // here in D1. We check both, reserve in D1, and mirror into the DO so an
+  // in-app call is also blocked while this user is on the phone.
+  const handle = String(user.email || "").toLowerCase();
+  const presence = env.SIGNALING.get(env.SIGNALING.idFromName("global"));
+
+  const inAppBusy = await isInAppBusy(presence, handle);
+  const pstnRow = await env.DB.prepare("SELECT since FROM pstn_presence WHERE handle = ?")
+    .bind(handle)
     .first();
-  if (active && active.n > 0) {
+  const pstnBusy = !!(pstnRow && now - pstnRow.since < MAX_PSTN_BUSY_MS);
+
+  if (inAppBusy || pstnBusy) {
     await logCall(env, user.id, {
       to_e164: toE164,
       from_e164: decision.fromE164,
@@ -84,25 +91,64 @@ export async function authorizeAndDial(env, user, toRaw, numberId, opts = {}) {
     return { ok: false, reason: "already_on_call" };
   }
 
-  const res = await getProvider(env).placeCall({
-    fromE164: decision.fromE164,
-    toE164,
-    userId: user.id,
-  });
+  // Reserve (durable in D1) and mirror into the DO for in-app blocking.
+  await env.DB.prepare("INSERT OR REPLACE INTO pstn_presence (handle, since) VALUES (?, ?)")
+    .bind(handle, now)
+    .run();
+  await controlPstn(presence, "pstn-begin", handle);
 
-  await logCall(env, user.id, {
-    to_e164: toE164,
-    from_e164: decision.fromE164,
-    provider_call_ref: res.callRef,
-    status: res.status,
-    started_at: now,
-    ended_at: now,
-    duration_sec: res.durationSec || 0,
-    price_micro: res.priceMicro || 0,
-    currency: res.currency || "GBP",
-  });
+  try {
+    const res = await getProvider(env).placeCall({
+      fromE164: decision.fromE164,
+      toE164,
+      userId: user.id,
+    });
 
-  return { ok: true, callRef: res.callRef, status: res.status, from: decision.fromE164 };
+    await logCall(env, user.id, {
+      to_e164: toE164,
+      from_e164: decision.fromE164,
+      provider_call_ref: res.callRef,
+      status: res.status,
+      started_at: now,
+      ended_at: now,
+      duration_sec: res.durationSec || 0,
+      price_micro: res.priceMicro || 0,
+      currency: res.currency || "GBP",
+    });
+
+    return { ok: true, callRef: res.callRef, status: res.status, from: decision.fromE164 };
+  } finally {
+    // Mock completes instantly -> release now. A real carrier releases on the
+    // end-of-call status webhook instead.
+    await env.DB.prepare("DELETE FROM pstn_presence WHERE handle = ?").bind(handle).run();
+    await controlPstn(presence, "pstn-end", handle);
+  }
+}
+
+async function isInAppBusy(stub, handle) {
+  try {
+    const resp = await stub.fetch("https://signaling/control/busy", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handle }),
+    });
+    const data = await resp.json();
+    return !!data.busy;
+  } catch {
+    return false;
+  }
+}
+
+async function controlPstn(stub, action, handle) {
+  try {
+    await stub.fetch(`https://signaling/control/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handle }),
+    });
+  } catch {
+    // best-effort mirror; D1 is authoritative
+  }
 }
 
 async function logCall(env, userId, f) {

@@ -13,7 +13,11 @@ export default defineWorkersConfig(async () => {
       setupFiles: ["./test/apply-migrations.js"],
       poolOptions: {
         workers: {
-          singleWorker: true,
+          // Durable Object stub fetches from the Worker (the presence /control
+          // API) are incompatible with per-test isolated storage in this pool
+          // version (it leaves a .sqlite-shm WAL file the cleanup rejects).
+          // Our tests use unique keys per test, so they don't rely on rollback.
+          isolatedStorage: false,
           wrangler: { configPath: "./wrangler.toml" },
           miniflare: {
             compatibilityDate: "2025-08-13",

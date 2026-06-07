@@ -91,6 +91,13 @@ CREATE TABLE dial_policy (
   enabled                  INTEGER NOT NULL DEFAULT 1
 );
 
+-- Active outbound PSTN calls (presence), so "one call at a time" spans BOTH
+-- in-app and phone calls. Set/cleared by the dial gate via the signaling DO.
+CREATE TABLE pstn_presence (
+  handle TEXT PRIMARY KEY,   -- user's email/handle
+  since  INTEGER NOT NULL
+);
+
 -- Authoritative, atomic rate-limit / abuse counters.
 CREATE TABLE rate_counters (
   bucket       TEXT PRIMARY KEY,      -- e.g. "otp:req:email:foo@x", "otp:verify:ip:1.2.3.4"
