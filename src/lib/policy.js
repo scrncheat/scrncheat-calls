@@ -1,16 +1,31 @@
-// Toll-fraud authorization: the single decision point for whether an outbound
-// PSTN call is permitted. Kept as a PURE function so every branch is trivially
-// testable without a database or network.
+// Outbound-dial authorization. The single decision point for whether a PSTN
+// call is permitted. Pure function so every branch is trivially testable.
+//
+// Policy (per the product intent):
+//   - Call ANY country — no geographic restriction by default.
+//   - Block premium-rate / special-rate / non-standard number TYPES so only
+//     normal landline/mobile-style numbers are dialable.
+//   - A prefix block-list backstops cases where the line type can't be read.
+//   - An OPTIONAL per-user country allow-list (off by default).
+//   - Velocity cap + kill-switch as toll-fraud safety nets.
 
-// Conservative default block-list: premium-rate / high-cost ranges that are a
-// common toll-fraud target. Tunable per-user via dial_policy.blocked_prefixes.
+// Number types that must never be dialed (premium / special / non-standard).
+export const BLOCKED_LINE_TYPES = new Set([
+  "premium_rate",
+  "personal_number",
+  "shared_cost",
+  "pager",
+  "uan",
+  "voicemail",
+]);
+
+// Backstop premium / high-cost prefixes for when the line type is unknown.
 export const DEFAULT_BLOCKED_PREFIXES = [
   "+449", // UK premium rate (09)
   "+4487", // UK personal/premium (087)
   "+4484", // UK special services (084)
-  "+4470", // UK personal numbers (070) — often expensive
+  "+4470", // UK personal numbers (070)
   "+1900", // US premium
-  "+1809", // Dominican Republic (classic one-ring scam target)
   "+882", // international networks
   "+883", // international networks
   "+979", // international premium-rate
@@ -25,15 +40,15 @@ export function parsePrefixes(str) {
 }
 
 /**
- * Decide whether a dial is allowed.
  * @param {object} o
- * @param {boolean} o.enabled            global/telephony kill-switch
+ * @param {boolean} o.enabled            telephony kill-switch
  * @param {string|null} o.toE164         normalised destination (null if invalid)
- * @param {object|null} o.verifiedNumber the caller-id row (must belong to user + be verified)
+ * @param {string} [o.destinationType]   classified line type of the destination
+ * @param {object|null} o.verifiedNumber caller-id row (must belong to user + verified)
  * @param {string} o.userId
- * @param {string[]} o.allowedPrefixes
- * @param {string[]} o.blockedPrefixes
- * @param {number} [o.hourlyCount]       post-increment count this hour
+ * @param {string[]} [o.allowedPrefixes] optional country allow-list (empty = all)
+ * @param {string[]} [o.blockedPrefixes]
+ * @param {number} [o.hourlyCount]
  * @param {number} [o.hourlyLimit]
  * @returns {{allowed: boolean, reason?: string, fromE164?: string}}
  */
@@ -53,11 +68,17 @@ export function evaluateDialPolicy(o) {
     return { allowed: false, reason: "caller_id_not_verified" };
   }
 
-  // Block-list wins over allow-list.
-  if ((o.blockedPrefixes || []).some((p) => o.toE164.startsWith(p))) {
+  // Block premium/special number types in ANY country.
+  if (o.destinationType && BLOCKED_LINE_TYPES.has(o.destinationType)) {
     return { allowed: false, reason: "destination_blocked" };
   }
-  if (!(o.allowedPrefixes || []).some((p) => o.toE164.startsWith(p))) {
+  const blocked = o.blockedPrefixes || DEFAULT_BLOCKED_PREFIXES;
+  if (blocked.some((p) => o.toE164.startsWith(p))) {
+    return { allowed: false, reason: "destination_blocked" };
+  }
+
+  // Optional country allow-list (off by default => call anywhere).
+  if (o.allowedPrefixes && o.allowedPrefixes.length && !o.allowedPrefixes.some((p) => o.toE164.startsWith(p))) {
     return { allowed: false, reason: "destination_not_allowed" };
   }
 

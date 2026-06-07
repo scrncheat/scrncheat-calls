@@ -1,30 +1,32 @@
 import { describe, it, expect } from "vitest";
 import { evaluateDialPolicy, DEFAULT_BLOCKED_PREFIXES } from "../src/lib/policy.js";
 
-const verified = { user_id: "u1", status: "verified", e164: "+447700900123" };
+const verified = { user_id: "u1", status: "verified", e164: "+447400123456" };
 const base = {
   enabled: true,
-  toE164: "+33123456789",
+  toE164: "+12025550123", // a US number — any country is allowed by default
+  destinationType: "fixed_or_mobile",
   verifiedNumber: verified,
   userId: "u1",
-  allowedPrefixes: ["+44", "+33"],
+  allowedPrefixes: [], // no geographic restriction
   blockedPrefixes: DEFAULT_BLOCKED_PREFIXES,
   hourlyCount: 1,
   hourlyLimit: 20,
 };
 
 describe("dial policy — the toll-fraud gate", () => {
-  it("allows a permitted destination with an owned, verified caller id", () => {
+  it("allows a normal number in ANY country with an owned, verified caller id", () => {
     const d = evaluateDialPolicy(base);
     expect(d.allowed).toBe(true);
-    expect(d.fromE164).toBe("+447700900123");
+    expect(d.fromE164).toBe("+447400123456");
+  });
+
+  it("allows an unknown-but-valid line type (does not over-block)", () => {
+    expect(evaluateDialPolicy({ ...base, destinationType: "unknown", toE164: "+33123456789" }).allowed).toBe(true);
   });
 
   it("blocks everything when telephony is disabled (kill-switch)", () => {
-    expect(evaluateDialPolicy({ ...base, enabled: false })).toMatchObject({
-      allowed: false,
-      reason: "telephony_disabled",
-    });
+    expect(evaluateDialPolicy({ ...base, enabled: false })).toMatchObject({ allowed: false, reason: "telephony_disabled" });
   });
 
   it("rejects an invalid destination", () => {
@@ -33,27 +35,29 @@ describe("dial policy — the toll-fraud gate", () => {
   });
 
   it("rejects a caller id the user does not own", () => {
-    const d = evaluateDialPolicy({ ...base, verifiedNumber: { ...verified, user_id: "someone-else" } });
-    expect(d.reason).toBe("caller_id_not_verified");
+    expect(evaluateDialPolicy({ ...base, verifiedNumber: { ...verified, user_id: "someone-else" } }).reason).toBe("caller_id_not_verified");
   });
 
-  it("rejects an unverified caller id", () => {
-    const d = evaluateDialPolicy({ ...base, verifiedNumber: { ...verified, status: "pending" } });
-    expect(d.reason).toBe("caller_id_not_verified");
-  });
-
-  it("rejects a missing caller id", () => {
+  it("rejects an unverified or missing caller id", () => {
+    expect(evaluateDialPolicy({ ...base, verifiedNumber: { ...verified, status: "pending" } }).reason).toBe("caller_id_not_verified");
     expect(evaluateDialPolicy({ ...base, verifiedNumber: null }).reason).toBe("caller_id_not_verified");
   });
 
-  it("blocks premium-rate / high-cost destinations (block-list wins)", () => {
-    expect(evaluateDialPolicy({ ...base, toE164: "+449001234567" }).reason).toBe("destination_blocked");
-    expect(evaluateDialPolicy({ ...base, toE164: "+18091234567" }).reason).toBe("destination_blocked");
-    expect(evaluateDialPolicy({ ...base, toE164: "+8821234567" }).reason).toBe("destination_blocked");
+  it("blocks premium-rate / special number TYPES in any country", () => {
+    for (const t of ["premium_rate", "personal_number", "shared_cost", "pager", "uan", "voicemail"]) {
+      expect(evaluateDialPolicy({ ...base, destinationType: t }).reason).toBe("destination_blocked");
+    }
   });
 
-  it("blocks destinations outside the allow-list", () => {
-    expect(evaluateDialPolicy({ ...base, toE164: "+15551234567" }).reason).toBe("destination_not_allowed");
+  it("blocks premium prefixes even when the line type is unknown (backstop)", () => {
+    expect(evaluateDialPolicy({ ...base, destinationType: "unknown", toE164: "+449001234567" }).reason).toBe("destination_blocked");
+  });
+
+  it("enforces a country allow-list only when one is configured", () => {
+    // configured to UK only -> a US number is rejected
+    expect(evaluateDialPolicy({ ...base, allowedPrefixes: ["+44"] }).reason).toBe("destination_not_allowed");
+    // configured to US -> allowed
+    expect(evaluateDialPolicy({ ...base, allowedPrefixes: ["+1"] }).allowed).toBe(true);
   });
 
   it("blocks when the hourly velocity cap is exceeded", () => {

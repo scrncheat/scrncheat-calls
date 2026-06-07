@@ -5,7 +5,7 @@
 import { evaluateDialPolicy, parsePrefixes, DEFAULT_BLOCKED_PREFIXES } from "./policy.js";
 import { incrementCounter } from "./ratelimit.js";
 import { getProvider } from "./telephony/index.js";
-import { normalizeE164 } from "./phone.js";
+import { classify } from "./phone.js";
 import { randomId } from "./crypto.js";
 
 const HOUR = 3600;
@@ -19,7 +19,9 @@ const HOURLY_CALL_LIMIT = 20;
 export async function authorizeAndDial(env, user, toRaw, numberId, opts = {}) {
   const now = opts.now ?? Date.now();
   const enabled = opts.enabled ?? env.TELEPHONY_ENABLED === "true";
-  const toE164 = normalizeE164(toRaw);
+  const dest = classify(toRaw);
+  const toE164 = dest.e164;
+  const destinationType = dest.lineType;
 
   const verifiedNumber = numberId
     ? await env.DB.prepare("SELECT * FROM verified_numbers WHERE id = ?").bind(numberId).first()
@@ -43,6 +45,7 @@ export async function authorizeAndDial(env, user, toRaw, numberId, opts = {}) {
   const decision = evaluateDialPolicy({
     enabled,
     toE164,
+    destinationType,
     verifiedNumber,
     userId: user.id,
     allowedPrefixes,

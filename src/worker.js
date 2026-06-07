@@ -152,7 +152,8 @@ async function hRequestCode(request, env, c) {
   const result = await requestLoginCode(env, body && body.email, clientIp(request));
   if (result.reason === "rate_limited") return tooManyRequests();
   // Neutral response — never reveal whether the address exists.
-  return ok({ message: "If that email is valid, a code has been sent." });
+  const dev = env.EXPOSE_CODES === "1" && result.devCode ? { devCode: result.devCode } : {};
+  return ok({ message: "If that email is valid, a code has been sent.", ...dev });
 }
 
 async function hVerifyCode(request, env, c) {
@@ -272,8 +273,9 @@ async function hSendVerify(request, env, c) {
     if (r.error === "not_found") return notFound();
     return badRequest(r.error);
   }
-  // The code is delivered by the carrier; it is never returned over HTTP.
-  return ok({ channel: r.channel });
+  // The code is delivered by the carrier; only exposed over HTTP in dev/test.
+  const dev = env.EXPOSE_CODES === "1" && r.devCode ? { devCode: r.devCode } : {};
+  return ok({ channel: r.channel, ...dev });
 }
 
 async function hConfirmNumber(request, env, c) {

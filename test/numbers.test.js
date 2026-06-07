@@ -112,15 +112,23 @@ describe("external dial authorization (mock carrier)", () => {
     expect(r).toMatchObject({ ok: false, reason: "destination_blocked" });
   });
 
-  it("logs blocked attempts to call history", async () => {
+  it("allows calling any country by default (no geographic limit)", async () => {
+    const u = await user("anycountry@example.com");
+    const numId = await verifiedNumberFor(u, "+447400123425");
+    const r = await authorizeAndDial(env, u, "+12025550123", numId, { enabled: true }); // US
+    expect(r.ok).toBe(true);
+    expect(r.callRef).toMatch(/^mock-call-/);
+  });
+
+  it("logs blocked premium attempts to call history", async () => {
     const u = await user("logged@example.com");
     const numId = await verifiedNumberFor(u, "+447400123424");
-    await authorizeAndDial(env, u, "+12025550123", numId, { enabled: true }); // valid US, not in allow-list
+    await authorizeAndDial(env, u, "+449001234567", numId, { enabled: true }); // premium-rate
     const { results } = await env.DB.prepare(
       "SELECT status, block_reason FROM call_logs WHERE user_id = ? ORDER BY started_at DESC LIMIT 1"
     )
       .bind(u.id)
       .all();
-    expect(results[0]).toMatchObject({ status: "blocked", block_reason: "destination_not_allowed" });
+    expect(results[0]).toMatchObject({ status: "blocked", block_reason: "destination_blocked" });
   });
 });

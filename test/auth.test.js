@@ -95,7 +95,10 @@ describe("passwordless auth — abuse resistance", () => {
     const r2 = await jsonPost("/api/auth/request-code", { email: "nobody-here@example.com" });
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
-    expect(await r1.text()).toBe(await r2.text());
+    // The user-facing message is identical regardless of whether the email
+    // exists. (The dev-only devCode field is never present in production.)
+    const [j1, j2] = [await r1.json(), await r2.json()];
+    expect(j1.message).toBe(j2.message);
   });
 
   it("rejects a forged/garbage session cookie", async () => {

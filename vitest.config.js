@@ -9,6 +9,7 @@ export default defineWorkersConfig(async () => {
 
   return {
     test: {
+      include: ["test/**/*.test.js"],
       setupFiles: ["./test/apply-migrations.js"],
       poolOptions: {
         workers: {
