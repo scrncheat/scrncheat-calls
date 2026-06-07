@@ -1,6 +1,6 @@
 {
   "name": "pierrefouquet-calls",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Cloudflare Workers WebRTC calling app — in-app calls + (deferred) PSTN, passwordless auth.",
