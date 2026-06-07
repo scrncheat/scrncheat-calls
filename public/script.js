@@ -106,12 +106,20 @@ $("logoutButton").addEventListener("click", async () => {
   showLogin();
 });
 
-function enterApp() {
+async function enterApp() {
   hide($("loginView"));
   show($("appView"));
   show($("account"));
   $("accountEmail").textContent = myEmail;
+
+  const me = await api("/api/auth/me");
+  const enabled = me.ok && me.data.telephonyEnabled;
+  $("telephonyStatus").textContent = enabled
+    ? "carrier connected"
+    : "off — external calls are disabled until a carrier is connected";
+
   connectSignaling();
+  loadNumbers();
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +303,140 @@ function teardownCall() {
   $("callButton").disabled = !(ws && ws.readyState === WebSocket.OPEN);
   hide($("incomingCall"));
 }
+
+// ---------------------------------------------------------------------------
+// My numbers + external dialing
+// ---------------------------------------------------------------------------
+
+function setNumbersStatus(text) { $("numbersStatus").textContent = text; }
+
+async function loadNumbers() {
+  const res = await api("/api/numbers");
+  const numbers = res.ok ? res.data.numbers : [];
+  renderNumbers(numbers);
+  populateCallerIds(numbers);
+}
+
+function renderNumbers(numbers) {
+  const list = $("numbersList");
+  list.innerHTML = "";
+  if (!numbers.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "No numbers yet.";
+    list.appendChild(li);
+    return;
+  }
+  for (const n of numbers) {
+    const li = document.createElement("li");
+    li.className = "number-item";
+
+    const label = document.createElement("span");
+    label.textContent = `${n.e164} · ${n.line_type || "?"} · ${n.status}`;
+    li.appendChild(label);
+
+    const actions = document.createElement("span");
+    actions.className = "number-actions";
+    if (n.status === "verified") {
+      const badge = document.createElement("span");
+      badge.className = "badge ok";
+      badge.textContent = "verified";
+      actions.appendChild(badge);
+    } else {
+      const sendBtn = document.createElement("button");
+      sendBtn.textContent = "Send code";
+      sendBtn.dataset.action = "send";
+      sendBtn.dataset.id = n.id;
+      actions.appendChild(sendBtn);
+
+      const codeInput = document.createElement("input");
+      codeInput.placeholder = "code";
+      codeInput.maxLength = 6;
+      codeInput.className = "code-input";
+      codeInput.dataset.code = n.id;
+      actions.appendChild(codeInput);
+
+      const confirmBtn = document.createElement("button");
+      confirmBtn.textContent = "Confirm";
+      confirmBtn.dataset.action = "confirm";
+      confirmBtn.dataset.id = n.id;
+      actions.appendChild(confirmBtn);
+    }
+    const rm = document.createElement("button");
+    rm.textContent = "Remove";
+    rm.className = "link";
+    rm.dataset.action = "remove";
+    rm.dataset.id = n.id;
+    actions.appendChild(rm);
+
+    li.appendChild(actions);
+    list.appendChild(li);
+  }
+}
+
+function populateCallerIds(numbers) {
+  const sel = $("callerId");
+  sel.innerHTML = "";
+  const verified = numbers.filter((n) => n.status === "verified");
+  if (!verified.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— verify a number first —";
+    sel.appendChild(opt);
+    return;
+  }
+  for (const n of verified) {
+    const opt = document.createElement("option");
+    opt.value = n.id;
+    opt.textContent = n.e164;
+    sel.appendChild(opt);
+  }
+}
+
+$("addNumberButton").addEventListener("click", async () => {
+  const number = $("newNumber").value.trim();
+  if (!number) return;
+  const res = await api("/api/numbers", { method: "POST", body: { number } });
+  if (res.ok) {
+    $("newNumber").value = "";
+    setNumbersStatus("");
+    loadNumbers();
+  } else {
+    setNumbersStatus(`Could not add number: ${res.data.error || res.status}`);
+  }
+});
+
+$("numbersList").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const { action, id } = btn.dataset;
+  if (action === "send") {
+    const res = await api(`/api/numbers/${id}/verify`, { method: "POST" });
+    setNumbersStatus(res.ok ? "Code sent (delivered by carrier)." : `Error: ${res.data.error || res.status}`);
+  } else if (action === "confirm") {
+    const input = document.querySelector(`input[data-code="${id}"]`);
+    const code = input ? input.value.trim() : "";
+    const res = await api(`/api/numbers/${id}/confirm`, { method: "POST", body: { code } });
+    if (res.ok) { setNumbersStatus("Number verified."); loadNumbers(); }
+    else setNumbersStatus(`Error: ${res.data.error || res.status}`);
+  } else if (action === "remove") {
+    await api(`/api/numbers/${id}`, { method: "DELETE" });
+    loadNumbers();
+  }
+});
+
+$("dialButton").addEventListener("click", async () => {
+  const to = $("dialTarget").value.trim();
+  const numberId = $("callerId").value;
+  if (!to) { $("dialStatus").textContent = "Enter a number to dial."; return; }
+  if (!numberId) { $("dialStatus").textContent = "Verify a caller-ID number first."; return; }
+  const res = await api("/api/voice/dial", { method: "POST", body: { to, numberId } });
+  if (res.ok) {
+    $("dialStatus").textContent = `Calling ${to} as ${res.data.from} (ref ${res.data.callRef}).`;
+  } else {
+    $("dialStatus").textContent = `Blocked: ${res.data.error}`;
+  }
+});
 
 // ---------------------------------------------------------------------------
 bootstrap();

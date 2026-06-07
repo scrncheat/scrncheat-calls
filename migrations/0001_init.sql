@@ -51,6 +51,9 @@ CREATE TABLE verified_numbers (
   channel        TEXT,                          -- sms | voice
   provider_ref   TEXT,                          -- carrier-side id (e.g. OutgoingCallerId SID)
   verify_attempts INTEGER NOT NULL DEFAULT 0,
+  verify_code_hash TEXT,                         -- hmac of the in-flight OTP
+  verify_salt    TEXT,
+  verify_code_expires_at INTEGER,
   created_at     INTEGER NOT NULL,
   verified_at    INTEGER
 );

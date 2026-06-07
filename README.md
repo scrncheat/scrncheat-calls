@@ -6,11 +6,14 @@ A Cloudflare Workers calling app:
   (free, peer-to-peer, Cloudflare STUN/TURN). **Live.**
 - **Passwordless auth** — sign in with an email + a 6-digit code. No passwords.
   Email is sent via the Cloudflare Email Service `send_email` binding. **Live.**
-- **External (PSTN) calls + number verification** — dial real mobiles/landlines
-  and present a *verified* number as caller ID. Built behind a spend-capped
-  provider interface and a mock carrier, but **switched off** until a real
-  telephone carrier is wired in (reaching the phone network costs per-minute and
-  needs a carrier — there is no free, provider-less path). **Deferred.**
+- **External (PSTN) calls + number verification** — register a number, prove
+  ownership via an OTP (SMS for mobiles, voice call for landlines), and present
+  it as caller ID. The verification flow, the toll-fraud authorization gate
+  (caller-ID ownership, allow-lists, premium-rate blocks, velocity caps,
+  kill-switch) and its tests are **built and run against a mock carrier** behind
+  a swappable provider interface — **switched off** until a real carrier is
+  wired in (reaching the phone network costs per-minute and needs a carrier;
+  there is no free, provider-less path). **Real carrier deferred (Phase 4).**
 
 ## Architecture
 
@@ -18,7 +21,7 @@ A Cloudflare Workers calling app:
 |---|---|
 | `src/worker.js` | HTTP router, auth API, session-gated `/ws` upgrade, security headers. Owns all secrets/DB/authorization. |
 | `src/signaling-do.js` | `SignalingRoom` Durable Object — WebSocket-Hibernation registry + 1:1 relay. Identity is bound server-side; client-supplied sender ids are ignored. |
-| `src/lib/*` | `auth` (codes + sessions), `email` (Email Service), `ratelimit` (atomic D1 counters), `turn` (short-lived ICE creds), `crypto`, `cookies`, `responses`. |
+| `src/lib/*` | `auth` (codes + sessions), `email` (Email Service), `numbers` (registration + OTP verification), `dial` + `policy` (toll-fraud gate), `phone` (E.164), `telephony/*` (provider interface + mock), `ratelimit` (atomic D1 counters), `turn`, `crypto`, `cookies`, `responses`. |
 | D1 (`DB`) | users, sessions, login_codes, verified_numbers, call_logs, dial_policy, rate_counters. |
 | `public/` | Single-page client: login, in-app dialer, (disabled) external dialer. |
 

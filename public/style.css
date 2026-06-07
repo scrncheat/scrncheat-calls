@@ -94,4 +94,32 @@ button.danger:hover { background: #b91c1c; }
 
 #remoteAudio { width: 100%; margin-top: 16px; }
 
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 1rem;
+  background: #fff;
+}
+
+.numbers { list-style: none; padding: 0; margin: 12px 0 0; }
+
+.number-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.number-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.number-actions button { padding: 6px 10px; font-size: 0.85rem; margin: 0; }
+.code-input { width: 90px; padding: 6px 8px; }
+
+.badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: #e5e7eb; color: var(--ink); }
+.badge.ok { background: #dcfce7; color: #166534; }
+
 .hidden { display: none !important; }

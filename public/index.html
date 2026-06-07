@@ -43,9 +43,7 @@
     <section id="appView" class="hidden">
       <div class="card">
         <h2>Call a user</h2>
-        <p class="muted">
-          Connection: <strong id="connStatus">connecting…</strong>
-        </p>
+        <p class="muted">Connection: <strong id="connStatus">connecting…</strong></p>
         <label for="callTarget">Their email</label>
         <input type="email" id="callTarget" placeholder="friend@example.com" />
         <div class="row">
@@ -65,16 +63,29 @@
         </div>
       </div>
 
-      <div class="card disabled-card">
-        <h2>External (phone) calling</h2>
+      <div class="card">
+        <h2>My numbers</h2>
         <p class="muted">
-          Dialing real mobiles and landlines requires a connected telephone
-          carrier. This is built and tested but switched <strong>off</strong>
-          until a carrier is wired in — so there are no charges.
+          Register a number you own, verify it (SMS for mobiles, a voice call for
+          landlines), then present it as caller ID. Verification needs a connected
+          carrier to deliver the code.
         </p>
-        <label for="externalNumber">Phone number</label>
-        <input type="tel" id="externalNumber" placeholder="+44…" disabled />
-        <button id="dialButton" disabled>Dial (unavailable)</button>
+        <label for="newNumber">Add a number (international format)</label>
+        <input type="tel" id="newNumber" placeholder="+44…" />
+        <button id="addNumberButton">Add</button>
+        <ul id="numbersList" class="numbers"></ul>
+        <p id="numbersStatus" class="status"></p>
+      </div>
+
+      <div class="card">
+        <h2>Call an external number</h2>
+        <p class="muted">Status: <strong id="telephonyStatus">checking…</strong></p>
+        <label for="callerId">Present caller ID</label>
+        <select id="callerId"></select>
+        <label for="dialTarget">Number to dial (international format)</label>
+        <input type="tel" id="dialTarget" placeholder="+33…" />
+        <button id="dialButton">Dial</button>
+        <p id="dialStatus" class="status"></p>
       </div>
     </section>
   </main>

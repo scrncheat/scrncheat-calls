@@ -20,6 +20,14 @@ import {
 } from "./lib/auth.js";
 import { randomToken, timingSafeEqualHex } from "./lib/crypto.js";
 import { getTurnCredentials } from "./lib/turn.js";
+import {
+  listNumbers,
+  registerNumber,
+  sendNumberVerification,
+  confirmNumber,
+  deleteNumber,
+} from "./lib/numbers.js";
+import { authorizeAndDial } from "./lib/dial.js";
 import { SignalingRoom } from "./signaling-do.js";
 
 export { SignalingRoom };
@@ -86,6 +94,14 @@ const ROUTES = [
   { method: "POST", path: "/api/auth/logout", handler: hLogout, auth: true, csrf: true },
   { method: "GET", path: "/api/auth/me", handler: hMe, auth: true, csrf: false },
   { method: "GET", path: "/api/turn", handler: hTurn, auth: true, csrf: false },
+
+  { method: "GET", path: "/api/numbers", handler: hListNumbers, auth: true, csrf: false },
+  { method: "POST", path: "/api/numbers", handler: hRegisterNumber, auth: true, csrf: true },
+  { method: "POST", path: "/api/numbers/:id/verify", handler: hSendVerify, auth: true, csrf: true },
+  { method: "POST", path: "/api/numbers/:id/confirm", handler: hConfirmNumber, auth: true, csrf: true },
+  { method: "DELETE", path: "/api/numbers/:id", handler: hDeleteNumber, auth: true, csrf: true },
+  { method: "POST", path: "/api/voice/dial", handler: hDial, auth: true, csrf: true },
+  { method: "GET", path: "/api/calls", handler: hCalls, auth: true, csrf: false },
 ];
 
 async function handleApi(request, env, url) {
@@ -93,11 +109,12 @@ async function handleApi(request, env, url) {
   const unsafe = method !== "GET" && method !== "HEAD";
   if (unsafe && !originAllowed(request, url)) return forbidden("bad_origin");
 
-  const route = ROUTES.find((r) => r.method === method && r.path === url.pathname);
-  if (!route) return notFound();
+  const matched = matchRoute(method, url.pathname);
+  if (!matched) return notFound();
+  const { route, params } = matched;
 
   const cookies = parseCookies(request);
-  const c = { url, cookies, secure: url.protocol === "https:", user: null };
+  const c = { url, cookies, params, secure: url.protocol === "https:", user: null };
 
   if (route.auth) {
     const user = await getSessionUser(env, cookies[SESSION_COOKIE]);
@@ -194,12 +211,106 @@ async function hLogout(request, env, c) {
 }
 
 async function hMe(request, env, c) {
-  return ok({ user: { email: c.user.email } });
+  return ok({
+    user: { email: c.user.email },
+    telephonyEnabled: env.TELEPHONY_ENABLED === "true",
+  });
 }
 
 async function hTurn(request, env, c) {
   const iceServers = await getTurnCredentials(env);
   return ok({ iceServers });
+}
+
+async function readJson(request) {
+  try {
+    return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function matchRoute(method, pathname) {
+  const segs = pathname.split("/").filter(Boolean);
+  for (const route of ROUTES) {
+    if (route.method !== method) continue;
+    const pat = route.path.split("/").filter(Boolean);
+    if (pat.length !== segs.length) continue;
+    const params = {};
+    let okMatch = true;
+    for (let i = 0; i < pat.length; i++) {
+      if (pat[i].startsWith(":")) params[pat[i].slice(1)] = decodeURIComponent(segs[i]);
+      else if (pat[i] !== segs[i]) {
+        okMatch = false;
+        break;
+      }
+    }
+    if (okMatch) return { route, params };
+  }
+  return null;
+}
+
+// --- Verified numbers & external dialing (mock carrier; carrier OFF by default) ---
+
+async function hListNumbers(request, env, c) {
+  return ok({ numbers: await listNumbers(env, c.user.id) });
+}
+
+async function hRegisterNumber(request, env, c) {
+  const body = await readJson(request);
+  if (!body) return badRequest();
+  const r = await registerNumber(env, c.user.id, body.number);
+  if (!r.ok) return badRequest(r.error);
+  return ok({ number: { id: r.id, e164: r.e164, status: r.status, lineType: r.lineType, channel: r.channel } });
+}
+
+async function hSendVerify(request, env, c) {
+  const body = (await readJson(request)) || {};
+  const r = await sendNumberVerification(env, c.user.id, c.params.id, body.channel);
+  if (!r.ok) {
+    if (r.error === "rate_limited") return tooManyRequests();
+    if (r.error === "not_found") return notFound();
+    return badRequest(r.error);
+  }
+  // The code is delivered by the carrier; it is never returned over HTTP.
+  return ok({ channel: r.channel });
+}
+
+async function hConfirmNumber(request, env, c) {
+  const body = await readJson(request);
+  if (!body) return badRequest();
+  const r = await confirmNumber(env, c.user.id, c.params.id, body.code);
+  if (!r.ok) {
+    if (r.error === "not_found") return notFound();
+    return badRequest(r.error);
+  }
+  return ok({ status: r.status });
+}
+
+async function hDeleteNumber(request, env, c) {
+  await deleteNumber(env, c.user.id, c.params.id);
+  return ok({});
+}
+
+async function hDial(request, env, c) {
+  const body = await readJson(request);
+  if (!body) return badRequest();
+  const r = await authorizeAndDial(env, c.user, body.to, body.numberId);
+  if (!r.ok) {
+    const status = r.reason === "rate_limited" ? 429 : 403;
+    return jsonWithHeaders({ ok: false, error: r.reason }, status, new Headers());
+  }
+  return ok({ callRef: r.callRef, from: r.from, status: r.status });
+}
+
+async function hCalls(request, env, c) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, kind, direction, from_e164, to_e164, status, block_reason, started_at, duration_sec
+     FROM call_logs WHERE user_id = ? ORDER BY started_at DESC LIMIT 50`
+  )
+    .bind(c.user.id)
+    .all();
+  return ok({ calls: results || [] });
 }
 
 // ---------------------------------------------------------------------------
