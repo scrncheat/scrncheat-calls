@@ -101,6 +101,8 @@ $("verifyButton").addEventListener("click", async () => {
 $("logoutButton").addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST" });
   teardownCall();
+  if (voiceCall) { try { voiceCall.disconnect(); } catch {} voiceCall = null; }
+  if (voiceDevice) { try { voiceDevice.destroy(); } catch {} voiceDevice = null; }
   if (ws) { try { ws.close(); } catch {} ws = null; }
   myEmail = null;
   showLogin();
@@ -120,6 +122,7 @@ async function enterApp() {
 
   connectSignaling();
   loadNumbers();
+  if (enabled) setupVoiceDevice();
 }
 
 // ---------------------------------------------------------------------------
@@ -419,7 +422,17 @@ $("numbersList").addEventListener("click", async (e) => {
   const { action, id } = btn.dataset;
   if (action === "send") {
     const res = await api(`/api/numbers/${id}/verify`, { method: "POST" });
-    setNumbersStatus(res.ok ? "Code sent (delivered by carrier)." : `Error: ${res.data.error || res.status}`);
+    if (!res.ok) {
+      setNumbersStatus(`Error: ${res.data.error || res.status}`);
+    } else if (res.data.displayCode) {
+      // Carrier-driven validation (Twilio): the carrier calls the number and the
+      // user keys in this code on their handset, then clicks Confirm.
+      setNumbersStatus(
+        `The carrier is calling this number — enter ${res.data.displayCode} on your phone, then click Confirm.`
+      );
+    } else {
+      setNumbersStatus("Code sent (delivered by carrier). Enter it and click Confirm.");
+    }
   } else if (action === "confirm") {
     const input = document.querySelector(`input[data-code="${id}"]`);
     const code = input ? input.value.trim() : "";
@@ -432,17 +445,88 @@ $("numbersList").addEventListener("click", async (e) => {
   }
 });
 
+// --- Browser softphone (Twilio Voice SDK) ---------------------------------
+
+let voiceDevice = null;
+let voiceCall = null;
+
+async function refreshVoiceToken() {
+  const t = await api("/api/voice/token");
+  return t.ok && t.data.token ? t.data.token : null;
+}
+
+async function setupVoiceDevice() {
+  if (voiceDevice || typeof Twilio === "undefined" || !Twilio.Device) return;
+  const token = await refreshVoiceToken();
+  if (!token) { $("telephonyStatus").textContent = "carrier token unavailable"; return; }
+
+  voiceDevice = new Twilio.Device(token, { codecPreferences: ["opus", "pcmu"], logLevel: "error" });
+  voiceDevice.on("error", (e) => {
+    $("dialStatus").textContent = `Carrier error: ${e.message || e.code || e}`;
+  });
+  voiceDevice.on("tokenWillExpire", async () => {
+    const fresh = await refreshVoiceToken();
+    if (fresh) voiceDevice.updateToken(fresh);
+  });
+}
+
+function wireVoiceCall(to) {
+  $("dialHangupButton").disabled = false;
+  voiceCall.on("accept", () => { $("dialStatus").textContent = `In call with ${to}.`; });
+  voiceCall.on("disconnect", () => endVoiceCall("Call ended."));
+  voiceCall.on("cancel", () => endVoiceCall("Call ended."));
+  voiceCall.on("reject", () => endVoiceCall("Call rejected."));
+  voiceCall.on("error", (e) => endVoiceCall(`Call error: ${e.message || e.code || e}`));
+}
+
+function endVoiceCall(message) {
+  voiceCall = null;
+  $("dialHangupButton").disabled = true;
+  $("dialButton").disabled = false;
+  if (message) $("dialStatus").textContent = message;
+}
+
 $("dialButton").addEventListener("click", async () => {
   const to = $("dialTarget").value.trim();
   const numberId = $("callerId").value;
   if (!to) { $("dialStatus").textContent = "Enter a number to dial."; return; }
   if (!numberId) { $("dialStatus").textContent = "Verify a caller-ID number first."; return; }
+  if (voiceCall) { $("dialStatus").textContent = "Already on a call."; return; }
+
+  $("dialButton").disabled = true;
   const res = await api("/api/voice/dial", { method: "POST", body: { to, numberId } });
-  if (res.ok) {
-    $("dialStatus").textContent = `Calling ${to} as ${res.data.from} (ref ${res.data.callRef}).`;
-  } else {
+  if (!res.ok) {
     $("dialStatus").textContent = `Blocked: ${res.data.error}`;
+    $("dialButton").disabled = false;
+    return;
   }
+  // No ticket → server-side mock carrier (no browser audio leg); just report it.
+  if (!res.data.ticket) {
+    $("dialStatus").textContent = `Calling ${to} as ${res.data.from} (ref ${res.data.callRef}).`;
+    $("dialButton").disabled = false;
+    return;
+  }
+  if (!voiceDevice) {
+    $("dialStatus").textContent = "Carrier not ready — reload and try again.";
+    $("dialButton").disabled = false;
+    return;
+  }
+  try {
+    $("dialStatus").textContent = `Calling ${to} as ${res.data.from}…`;
+    // The browser passes ONLY the opaque ticket; the destination + caller ID were
+    // already authorized server-side and are recovered at the TwiML webhook.
+    voiceCall = await voiceDevice.connect({ params: { ticket: res.data.ticket } });
+    wireVoiceCall(to);
+  } catch (e) {
+    voiceCall = null;
+    $("dialButton").disabled = false;
+    $("dialStatus").textContent = `Could not start call: ${e.message || e}`;
+  }
+});
+
+$("dialHangupButton").addEventListener("click", () => {
+  if (voiceCall) voiceCall.disconnect();
+  else if (voiceDevice) voiceDevice.disconnectAll();
 });
 
 // ---------------------------------------------------------------------------

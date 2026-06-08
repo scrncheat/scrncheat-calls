@@ -84,6 +84,27 @@ export async function sendNumberVerification(env, userId, numberId, channelOverr
   const rl = await checkRateLimit(env, `num:verify:send:${numberId}`, 5, 86400, now);
   if (!rl.allowed) return { ok: false, error: "rate_limited" };
 
+  const provider = getProvider(env);
+
+  // Carrier-driven caller-ID validation (e.g. Twilio): the carrier owns the
+  // code and calls the number; we just show the code and poll for completion.
+  if (provider.verificationStyle === "carrier-callerid") {
+    const statusCb = env.APP_ORIGIN ? `${env.APP_ORIGIN}/api/numbers/callerid-status` : undefined;
+    const res = await provider.startCallerIdValidation({
+      e164: row.e164,
+      friendlyName: `user:${userId}`,
+      statusCallbackUrl: statusCb,
+    });
+    if (!res.ok) return { ok: false, error: "provider_error" };
+    await env.DB.prepare(
+      "UPDATE verified_numbers SET channel = 'voice', provider_ref = ?, verify_attempts = 0 WHERE id = ?"
+    )
+      .bind(res.ref || null, numberId)
+      .run();
+    // displayCode is meant to be shown to the user (not a secret like the OTP).
+    return { ok: true, channel: "voice", displayCode: res.displayCode };
+  }
+
   const channel =
     channelOverride === "voice" || channelOverride === "sms"
       ? channelOverride
@@ -101,7 +122,7 @@ export async function sendNumberVerification(env, userId, numberId, channelOverr
     .bind(codeHash, salt, now + VERIFY_TTL_SECONDS * 1000, channel, numberId)
     .run();
 
-  await getProvider(env).sendVerification({ e164: row.e164, channel, code });
+  await provider.sendVerification({ e164: row.e164, channel, code });
 
   const out = { ok: true, channel };
   if (env.EXPOSE_CODES === "1") out.devCode = code; // test-only; never returned over HTTP
@@ -114,6 +135,18 @@ export async function confirmNumber(env, userId, numberId, code, now = Date.now(
     .first();
   if (!row) return { ok: false, error: "not_found" };
   if (row.status === "verified") return { ok: true, status: "verified" };
+
+  // Carrier-driven style: there is no code to check here — ask the carrier
+  // whether the number is now a validated caller ID.
+  const provider = getProvider(env);
+  if (provider.verificationStyle === "carrier-callerid") {
+    if (!(await provider.isCallerIdValidated(row.e164))) {
+      return { ok: false, error: "not_yet_validated" };
+    }
+    await markVerified(env, numberId, now);
+    return { ok: true, status: "verified" };
+  }
+
   if (!row.verify_code_hash || !row.verify_code_expires_at || row.verify_code_expires_at < now) {
     return { ok: false, error: "no_pending_code" };
   }
@@ -127,6 +160,12 @@ export async function confirmNumber(env, userId, numberId, code, now = Date.now(
     return { ok: false, error: "invalid_code" };
   }
 
+  await markVerified(env, numberId, now);
+  return { ok: true, status: "verified" };
+}
+
+/** Flip a number to verified and clear any in-flight OTP material. */
+async function markVerified(env, numberId, now) {
   await env.DB.prepare(
     `UPDATE verified_numbers
        SET status = 'verified', verified_at = ?, verify_code_hash = NULL, verify_salt = NULL, verify_code_expires_at = NULL
@@ -134,8 +173,6 @@ export async function confirmNumber(env, userId, numberId, code, now = Date.now(
   )
     .bind(now, numberId)
     .run();
-
-  return { ok: true, status: "verified" };
 }
 
 export async function deleteNumber(env, userId, numberId) {

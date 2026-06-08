@@ -84,12 +84,18 @@
         <select id="callerId"></select>
         <label for="dialTarget">Number to dial (international format)</label>
         <input type="tel" id="dialTarget" placeholder="+33…" />
-        <button id="dialButton">Dial</button>
+        <div class="row">
+          <button id="dialButton">Dial</button>
+          <button id="dialHangupButton" disabled>Hang up</button>
+        </div>
         <p id="dialStatus" class="status"></p>
       </div>
     </section>
   </main>
 
+  <!-- Twilio Voice SDK, self-hosted so the strict CSP (script-src 'self') applies.
+       Only used once external calling is enabled. -->
+  <script src="vendor/twilio-voice.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
