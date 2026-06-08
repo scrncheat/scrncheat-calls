@@ -19,6 +19,8 @@ export default defineConfig(async () => {
             OTP_PEPPER: "test-pepper",
             EXPOSE_CODES: "1",
             TEST_MIGRATIONS: migrations,
+            // Test-only carrier creds so the webhook signature gate can be exercised.
+            TWILIO_AUTH_TOKEN: "test-twilio-token",
           },
         },
       }),

@@ -39,7 +39,7 @@ describe("toll-fraud safety nets", () => {
       callSid: "CA-cap-1",
       clientHandle: u.email,
     });
-    expect(r.timeLimitSec).toBe(90);
+    expect(r).toMatchObject({ ok: true, timeLimitSec: 90 });
   });
 
   it("blocks dialing once the daily spend cap is reached", async () => {

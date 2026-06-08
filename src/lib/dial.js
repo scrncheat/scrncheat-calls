@@ -203,7 +203,10 @@ export async function redeemDialTicket(env, { ticketId, callSid, clientHandle },
   if (t.expires_at < now) return { ok: false, reason: "ticket_expired" };
   // Identity comes from the signed access token (From=client:<handle>), never
   // from client-supplied params. Reject if it doesn't match the ticket's owner.
-  if (clientHandle && t.handle !== clientHandle) return { ok: false, reason: "handle_mismatch" };
+  // Handles are canonicalised to lowercase everywhere, so compare that way.
+  if (clientHandle && t.handle !== String(clientHandle).toLowerCase()) {
+    return { ok: false, reason: "handle_mismatch" };
+  }
 
   const handle = t.handle;
   const presence = env.SIGNALING.get(env.SIGNALING.idFromName("global"));
