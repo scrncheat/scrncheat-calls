@@ -48,6 +48,23 @@ describe("twilio verified caller id — provider", () => {
     expect(r).toMatchObject({ ok: true, displayCode: "482913", ref: "CA123" });
   });
 
+  it("startCallerIdValidation surfaces Twilio's error code and message on failure", async () => {
+    stubTwilio({
+      [`POST ${base}`]: {
+        status: 400,
+        body: { code: 21215, message: "Account not authorized to call +447400123456" },
+      },
+    });
+    const p = new TwilioProvider(fakeEnv());
+    const r = await p.startCallerIdValidation({ e164: "+447400123456" });
+    expect(r).toMatchObject({
+      ok: false,
+      status: 400,
+      code: 21215,
+      detail: "Account not authorized to call +447400123456",
+    });
+  });
+
   it("isCallerIdValidated reflects whether the number is on the account", async () => {
     const e164 = "+447400123456";
     stubTwilio({ [listKey(e164)]: { status: 200, body: { outgoing_caller_ids: [{ phone_number: e164 }] } } });

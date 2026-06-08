@@ -423,7 +423,11 @@ $("numbersList").addEventListener("click", async (e) => {
   if (action === "send") {
     const res = await api(`/api/numbers/${id}/verify`, { method: "POST" });
     if (!res.ok) {
-      setNumbersStatus(`Error: ${res.data.error || res.status}`);
+      // Carrier failures carry Twilio's own message + code so the reason is visible.
+      const detail = res.data.detail
+        ? `${res.data.detail}${res.data.providerCode ? ` (Twilio ${res.data.providerCode})` : ""}`
+        : res.data.error || res.status;
+      setNumbersStatus(`Error: ${detail}`);
     } else if (res.data.displayCode) {
       // Carrier-driven validation (Twilio): the carrier calls the number and the
       // user keys in this code on their handset, then clicks Confirm.

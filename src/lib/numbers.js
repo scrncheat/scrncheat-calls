@@ -95,7 +95,14 @@ export async function sendNumberVerification(env, userId, numberId, channelOverr
       friendlyName: `user:${userId}`,
       statusCallbackUrl: statusCb,
     });
-    if (!res.ok) return { ok: false, error: "provider_error" };
+    if (!res.ok) {
+      console.warn("startCallerIdValidation failed", {
+        status: res.status,
+        code: res.code,
+        detail: res.detail,
+      });
+      return { ok: false, error: "provider_error", status: res.status, code: res.code, detail: res.detail };
+    }
     await env.DB.prepare(
       "UPDATE verified_numbers SET channel = 'voice', provider_ref = ?, verify_attempts = 0 WHERE id = ?"
     )
