@@ -19,6 +19,11 @@ export default defineConfig(async () => {
             OTP_PEPPER: "test-pepper",
             EXPOSE_CODES: "1",
             TEST_MIGRATIONS: migrations,
+            // Force the mock provider + kill-switch-off in tests, overriding
+            // wrangler.toml's live TELEPHONY_* values (tests must never hit the
+            // real carrier; individual tests opt in via { enabled: true }).
+            TELEPHONY_PROVIDER: "mock",
+            TELEPHONY_ENABLED: "false",
             // Test-only carrier creds so the webhook signature gate can be exercised.
             TWILIO_AUTH_TOKEN: "test-twilio-token",
           },
