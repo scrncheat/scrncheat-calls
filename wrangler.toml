@@ -26,17 +26,14 @@ head_sampling_rate = 1
 APP_ORIGIN = "https://calls.pierrefouquet.co.uk"
 EMAIL_FROM = "no-reply@pierrefouquet.co.uk"
 EMAIL_FROM_NAME = "Pierre Fouquet Calls"
-# External (PSTN) calling stays OFF until a carrier is deliberately wired in.
-TELEPHONY_ENABLED = "false"
-# Carrier selection. Left unset here (defaults to the mock, which the test suite
-# relies on). Production sets TELEPHONY_PROVIDER = "twilio" in the Cloudflare
-# dashboard, alongside the Twilio config below.
-#   Dashboard vars:    TELEPHONY_PROVIDER = "twilio"
-#                      TWILIO_ACCOUNT_SID, TWILIO_TWIML_APP_SID
-#   Dashboard secrets: TWILIO_AUTH_TOKEN       (REST auth + webhook signatures)
-#                      TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET  (Access Tokens)
-# The caller ID presented is the user's own mobile, validated via Twilio's
-# Verified Caller ID flow — no rented number required.
+# External (PSTN) calling via Twilio — LIVE. The kill-switch and provider live
+# here (committed) so they survive Workers Builds deploys. Twilio credentials are
+# dashboard secrets: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_API_KEY_SID,
+# TWILIO_API_KEY_SECRET, TWILIO_TWIML_APP_SID. Caller ID is the user's own mobile,
+# validated via Twilio's Verified Caller ID flow — no rented number. The test
+# suite forces the mock via vitest.config.js, so this never affects tests.
+TELEPHONY_ENABLED = "true"
+TELEPHONY_PROVIDER = "twilio"
 # Empty = call any country. Premium-rate/special numbers are blocked by line
 # type regardless. Set e.g. "+44,+33" to additionally restrict to countries.
 DEFAULT_ALLOWED_PREFIXES = ""
@@ -45,8 +42,9 @@ DEFAULT_ALLOWED_PREFIXES = ""
 #   DEFAULT_DAILY_SPEND_CAP_MICRO  block once a user's est. daily spend hits this
 # A per-user dial_policy row overrides both (daily_spend_cap_micro, per_call_max_sec).
 TELEPHONY_RATE_MICRO_PER_MIN = "20000"
-# DEFAULT_DAILY_SPEND_CAP_MICRO is left unset by default; set it in the dashboard
-# to enforce a tight cap (e.g. "200000" = ~20p/day) once telephony is live.
+# Tight daily spend-cap backstop (~£1/day). Blocks new dials once a user's
+# estimated daily spend reaches it; a per-user dial_policy row can override.
+DEFAULT_DAILY_SPEND_CAP_MICRO = "1000000"
 LOGIN_CODE_TTL_SECONDS = "600"
 SESSION_TTL_SECONDS = "2592000"
 
