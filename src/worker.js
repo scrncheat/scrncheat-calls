@@ -4,6 +4,7 @@
 
 import { parseCookies, serializeCookie, SESSION_COOKIE, CSRF_COOKIE } from "./lib/cookies.js";
 import {
+  json,
   ok,
   badRequest,
   unauthorized,
@@ -279,6 +280,13 @@ async function hSendVerify(request, env, c) {
   if (!r.ok) {
     if (r.error === "rate_limited") return tooManyRequests();
     if (r.error === "not_found") return notFound();
+    if (r.error === "provider_error") {
+      console.warn("number verification provider error", { status: r.status, code: r.code, detail: r.detail });
+      return json(
+        { ok: false, error: "provider_error", providerStatus: r.status, providerCode: r.code, detail: r.detail },
+        400
+      );
+    }
     return badRequest(r.error);
   }
   // The OTP is delivered by the carrier; only exposed over HTTP in dev/test.

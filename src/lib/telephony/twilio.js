@@ -90,7 +90,16 @@ export class TwilioProvider {
     if (friendlyName) form.FriendlyName = friendlyName;
     if (statusCallbackUrl) form.StatusCallback = statusCallbackUrl;
     const r = await this.rest("POST", "/OutgoingCallerIds.json", form);
-    if (!r.ok || !r.data) return { ok: false, status: r.status };
+    if (!r.ok || !r.data || !r.data.validation_code) {
+      // Surface Twilio's own error so callers can diagnose (21215 geo-perm,
+      // 21421 invalid number, 20003 auth, etc.) instead of a blind failure.
+      return {
+        ok: false,
+        status: r.status,
+        code: r.data && r.data.code,
+        detail: (r.data && r.data.message) || null,
+      };
+    }
     return { ok: true, displayCode: r.data.validation_code, ref: r.data.call_sid };
   }
 
