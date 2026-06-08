@@ -21,7 +21,7 @@ A Cloudflare Workers calling app:
 ## Architecture
 
 | Piece | What it does |
-|---|---|
+| --- | --- |
 | `src/worker.js` | HTTP router, auth API, session-gated `/ws` upgrade, security headers. Owns all secrets/DB/authorization. |
 | `src/signaling-do.js` | `SignalingRoom` Durable Object — WebSocket-Hibernation registry + 1:1 relay. Identity is bound server-side; client-supplied sender ids are ignored. |
 | `src/lib/*` | `auth` (codes + sessions), `email` (Email Service), `numbers` (registration + verification), `dial` + `policy` (toll-fraud gate + dial tickets), `phone` (E.164), `telephony/*` (swappable provider interface: `mock` + `twilio`, JWT + webhook-signature utils), `ratelimit` (atomic D1 counters), `turn`, `crypto`, `cookies`, `responses`. |
@@ -85,7 +85,7 @@ One-time setup in the Twilio Console:
 Then set these in the Cloudflare dashboard and redeploy:
 
 | Name | Kind | Value |
-|---|---|---|
+| --- | --- | --- |
 | `TELEPHONY_PROVIDER` | var | `twilio` |
 | `TELEPHONY_ENABLED` | var | `true` (flip on only after an end-to-end test) |
 | `TWILIO_ACCOUNT_SID` | var | from the Console |
