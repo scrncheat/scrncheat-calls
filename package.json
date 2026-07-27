@@ -18,10 +18,10 @@
     "libphonenumber-js": "^1.11.17"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.16.20",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@playwright/test": "^1.49.1",
     "vitest": "^4.1.8",
-    "wrangler": "^4.105.0"
+    "wrangler": "^4.114.0"
   },
   "overrides": {
     "esbuild": "^0.28.1"
